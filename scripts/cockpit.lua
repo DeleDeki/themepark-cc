@@ -1,9 +1,10 @@
 -- =========================================================
--- SMALL PLANE COCKPIT V2
--- Artificial Horizon + Altitude + Thrust + GPWS
+-- SMALL PLANE COCKPIT V3
+-- Artificial Horizon + Altitude + Thrust + GPWS + Stall
 -- =========================================================
 
 local dfpwm = require("cc.audio.dfpwm")
+
 
 -- =========================================================
 -- SETTINGS
@@ -15,20 +16,19 @@ local PITCH_AXIS = 2
 
 local BANK_SIGN = 1
 
--- We already determined yours needs to be reversed.
+-- Your plane needs reversed pitch.
 local PITCH_SIGN = -1
 
 local PITCH_DEGREES_PER_ROW = 10
 
 
 -- =========================================================
--- AIRPORT / ALTITUDE SETTINGS
+-- AIRPORT / ALTITUDE
 -- =========================================================
 
--- Minecraft sea level / your airport level.
+-- Your airport / sea level.
 local GROUND_LEVEL = 63
 
--- Radio-altitude-style callouts.
 local ALTITUDE_CALLOUTS = {
     { altitude = 30, sound = "30.dfpwm" },
     { altitude = 20, sound = "20.dfpwm" },
@@ -37,35 +37,53 @@ local ALTITUDE_CALLOUTS = {
 
 
 -- =========================================================
--- WARNING SETTINGS
+-- BANK WARNING
 -- =========================================================
 
--- Change this whenever you want:
--- 30 = sensitive
--- 40 = more relaxed
+-- Change to 30, 35, 40 etc.
 local BANK_WARNING_ANGLE = 40
 
--- How often BANK ANGLE can repeat
--- while you're still banking too far.
+-- Seconds before repeating BANK ANGLE.
 local BANK_WARNING_REPEAT = 3
 
 
--- Vertical speed is measured in blocks per second.
+-- =========================================================
+-- STALL WARNING
+-- =========================================================
 
--- Example:
--- -8 means falling 8 blocks every second.
+-- Nose-up angle required before STALL becomes possible.
+local STALL_PITCH_ANGLE = 35
+
+-- If vertical speed is below this while pitched up,
+-- consider the aircraft to be struggling/stalling.
+--
+-- 2 means:
+-- climbing faster than 2 blocks/sec = no stall warning
+-- climbing slower than 2 blocks/sec = stall warning
+local STALL_MAX_VERTICAL_SPEED = 2
+
+local STALL_WARNING_REPEAT = 1.5
+
+
+-- =========================================================
+-- SINK RATE
+-- =========================================================
+
+-- Blocks per second.
 local SINK_RATE_THRESHOLD = -8
 
--- Only bother with sink-rate warning when below this height.
+-- Only warn below this height above airport level.
 local SINK_RATE_MAX_HEIGHT = 40
 
 local SINK_RATE_REPEAT = 3
 
 
--- More severe descent.
+-- =========================================================
+-- PULL UP
+-- =========================================================
+
 local PULL_UP_THRESHOLD = -12
 
--- PULL UP only becomes active when this close to ground.
 local PULL_UP_MAX_HEIGHT = 25
 
 local PULL_UP_REPEAT = 2
@@ -74,9 +92,18 @@ local PULL_UP_REPEAT = 2
 -- =========================================================
 -- SOUND FILES
 -- =========================================================
-local SOUND_BANK = "bank_angle.dfpwm"
-local SOUND_SINK_RATE = "sink_rate.dfpwm"
-local SOUND_PULL_UP = "pull_up.dfpwm"
+
+local SOUND_BANK =
+    "bank_angle.dfpwm"
+
+local SOUND_STALL =
+    "stall.dfpwm"
+
+local SOUND_SINK_RATE =
+    "sink_rate.dfpwm"
+
+local SOUND_PULL_UP =
+    "pull_up.dfpwm"
 
 
 -- =========================================================
@@ -129,6 +156,7 @@ local width, height =
 -- =========================================================
 
 local soundQueue = {}
+
 local currentlyPlaying = nil
 
 
@@ -139,12 +167,15 @@ local function soundAlreadyQueued(path)
     end
 
     for _, sound in ipairs(soundQueue) do
+
         if sound.path == path then
             return true
         end
+
     end
 
     return false
+
 end
 
 
@@ -166,13 +197,13 @@ local function queueSound(path, priority)
         }
     )
 
-    -- Highest priority warning first.
     table.sort(
         soundQueue,
         function(a, b)
             return a.priority > b.priority
         end
     )
+
 end
 
 
@@ -188,8 +219,10 @@ local function playSound(path)
         return
     end
 
+
     local decoder =
         dfpwm.make_decoder()
+
 
     while true do
 
@@ -200,8 +233,10 @@ local function playSound(path)
             break
         end
 
+
         local buffer =
             decoder(chunk)
+
 
         while not speaker.playAudio(buffer) do
             os.pullEvent("speaker_audio_empty")
@@ -209,9 +244,11 @@ local function playSound(path)
 
     end
 
+
     file.close()
 
     currentlyPlaying = nil
+
 end
 
 
@@ -421,7 +458,6 @@ local function drawHorizon(bank, pitch)
 
 
     -- Aircraft marker
-
     local aircraftY =
         round(centerY)
 
@@ -489,6 +525,7 @@ local previousTime = nil
 local verticalSpeed = 0
 
 local lastBankWarning = -100
+local lastStallWarning = -100
 local lastSinkWarning = -100
 local lastPullUpWarning = -100
 
@@ -499,7 +536,8 @@ local lastPullUpWarning = -100
 
 local function updateWarnings(
     altitude,
-    bank
+    bank,
+    pitch
 )
 
     local now =
@@ -509,9 +547,9 @@ local function updateWarnings(
         altitude - GROUND_LEVEL
 
 
-    -- =============================================
-    -- CALCULATE VERTICAL SPEED
-    -- =============================================
+    -- =====================================================
+    -- VERTICAL SPEED
+    -- =====================================================
 
     if previousAltitude and previousTime then
 
@@ -524,8 +562,7 @@ local function updateWarnings(
                 (altitude - previousAltitude)
                 / dt
 
-            -- Smooth it slightly so tiny sensor jitter
-            -- doesn't trigger warnings.
+            -- Smooth the measurement.
             verticalSpeed =
                 verticalSpeed * 0.75
                 + rawVS * 0.25
@@ -535,16 +572,36 @@ local function updateWarnings(
     end
 
 
-    -- =============================================
-    -- PULL UP
-    -- Highest priority
-    -- =============================================
+    -- =====================================================
+    -- CONDITIONS
+    -- =====================================================
 
     local pullUp =
         agl <= PULL_UP_MAX_HEIGHT
         and agl > 0
         and verticalSpeed <= PULL_UP_THRESHOLD
 
+
+    local stall =
+        pitch >= STALL_PITCH_ANGLE
+        and verticalSpeed <= STALL_MAX_VERTICAL_SPEED
+
+
+    local sinkRate =
+        agl <= SINK_RATE_MAX_HEIGHT
+        and agl > 0
+        and verticalSpeed <= SINK_RATE_THRESHOLD
+
+
+    local bankAngle =
+        math.abs(bank)
+        >= BANK_WARNING_ANGLE
+
+
+    -- =====================================================
+    -- PULL UP
+    -- Priority 100
+    -- =====================================================
 
     if pullUp then
 
@@ -553,6 +610,7 @@ local function updateWarnings(
             1,
             colors.red
         )
+
 
         if
             now - lastPullUpWarning
@@ -569,22 +627,48 @@ local function updateWarnings(
         end
 
 
-    -- =============================================
+    -- =====================================================
+    -- STALL
+    -- Priority 90
+    -- =====================================================
+
+    elseif stall then
+
+        showWarning(
+            "STALL",
+            1,
+            colors.red
+        )
+
+
+        if
+            now - lastStallWarning
+            >= STALL_WARNING_REPEAT
+        then
+
+            queueSound(
+                SOUND_STALL,
+                90
+            )
+
+            lastStallWarning = now
+
+        end
+
+
+    -- =====================================================
     -- SINK RATE
-    -- =============================================
+    -- Priority 80
+    -- =====================================================
 
-    elseif
-        agl <= SINK_RATE_MAX_HEIGHT
-        and agl > 0
-        and verticalSpeed <= SINK_RATE_THRESHOLD
-
-    then
+    elseif sinkRate then
 
         showWarning(
             "SINK RATE",
             1,
             colors.orange
         )
+
 
         if
             now - lastSinkWarning
@@ -601,21 +685,19 @@ local function updateWarnings(
         end
 
 
-    -- =============================================
+    -- =====================================================
     -- BANK ANGLE
-    -- =============================================
+    -- Priority 60
+    -- =====================================================
 
-    elseif
-        math.abs(bank)
-        >= BANK_WARNING_ANGLE
-
-    then
+    elseif bankAngle then
 
         showWarning(
             "BANK ANGLE",
             1,
             colors.orange
         )
+
 
         if
             now - lastBankWarning
@@ -634,17 +716,16 @@ local function updateWarnings(
     end
 
 
-    -- =============================================
+    -- =====================================================
     -- ALTITUDE CALLOUTS
-    -- =============================================
+    -- =====================================================
 
     if previousAGL then
 
         -- Only announce while descending.
         if verticalSpeed < 0 then
 
-            -- Don't play normal altitude callouts
-            -- while screaming PULL UP.
+            -- Don't calmly say "20" while screaming PULL UP.
             if not pullUp then
 
                 for _, callout
@@ -677,9 +758,14 @@ local function updateWarnings(
     end
 
 
-    previousAltitude = altitude
-    previousAGL = agl
-    previousTime = now
+    previousAltitude =
+        altitude
+
+    previousAGL =
+        agl
+
+    previousTime =
+        now
 
 end
 
@@ -712,16 +798,15 @@ local function drawDisplay()
         getThrust()
 
 
-    -- WARNING CALCULATIONS
-
+    -- Warning calculations
     updateWarnings(
         altitude,
-        bank
+        bank,
+        pitch
     )
 
 
-    -- ARTIFICIAL HORIZON
-
+    -- Artificial horizon
     drawHorizon(
         bank,
         pitch
@@ -854,7 +939,7 @@ end
 
 
 -- =========================================================
--- RUN DISPLAY + AUDIO AT SAME TIME
+-- RUN DISPLAY + AUDIO
 -- =========================================================
 
 parallel.waitForAny(
