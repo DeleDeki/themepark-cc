@@ -1,50 +1,75 @@
 -- =========================================================
--- SMALL PLANE COCKPIT DISPLAY
--- Aeronautics / Simulated + CC:Tweaked
+-- SMALL PLANE COCKPIT DISPLAY V1
+-- Create Aeronautics / Simulated + CC:Tweaked
+--
+-- Displays:
+--   Altitude
+--   Artificial horizon
+--   Bank angle
+--   Thrust 0-15
 -- =========================================================
 
--- ===== SETTINGS =====
 
--- If the nose of the plane was originally built pointing
--- NORTH/SOUTH, leave this as "z".
--- If it was built pointing EAST/WEST, change it to "x".
-local FORWARD_AXIS = "z"
+-- =========================
+-- SETTINGS
+-- =========================
 
--- If bank moves the wrong way, change 1 to -1
+-- Gimbal returns:
+-- angles[1] = X angle
+-- angles[2] = Z angle
+--
+-- If BANK reacts when you PITCH instead of when you ROLL,
+-- change this from 1 to 2.
+local BANK_AXIS = 1
+
+-- Pitch will automatically use the other axis.
+local PITCH_AXIS = 2
+
+-- If bank direction is backwards, change 1 to -1.
 local BANK_SIGN = 1
 
--- If the horizon moves UP when you pitch UP,
--- change this from 1 to -1.
+-- If horizon moves the wrong direction while pitching,
+-- change 1 to -1.
 local PITCH_SIGN = 1
 
--- How many degrees of pitch moves the horizon by one screen row.
+-- Bigger number = horizon moves less for pitch.
 local PITCH_DEGREES_PER_ROW = 10
 
--- ===== PERIPHERALS =====
 
-local monitor = peripheral.wrap("top")
-local gimbal = peripheral.wrap("left")
-local altitudeSensor = peripheral.wrap("bottom")
+-- =========================
+-- FIND PERIPHERALS
+-- =========================
+
+local monitor = peripheral.find("monitor")
+local gimbal = peripheral.find("gimbal_sensor")
+local altitudeSensor = peripheral.find("altitude_sensor")
 
 if not monitor then
-    error("No monitor on TOP")
+    error("No monitor found")
 end
 
 if not gimbal then
-    error("No gimbal sensor on LEFT")
+    error("No gimbal sensor found")
 end
 
 if not altitudeSensor then
-    error("No altitude sensor on BOTTOM")
+    error("No altitude sensor found")
 end
 
--- Advanced monitor: maximum useful resolution on one block.
+
+-- =========================
+-- MONITOR SETUP
+-- =========================
+
 monitor.setTextScale(0.5)
 monitor.setCursorBlink(false)
 
 local width, height = monitor.getSize()
 
--- ===== HELPERS =====
+
+-- =========================
+-- HELPERS
+-- =========================
 
 local function round(n)
     if n >= 0 then
@@ -54,155 +79,227 @@ local function round(n)
     end
 end
 
-local function centerText(y, text, textColor, backgroundColor)
-    local x = math.floor((width - #text) / 2) + 1
 
-    monitor.setCursorPos(x, y)
-    monitor.setTextColor(textColor)
-    monitor.setBackgroundColor(backgroundColor)
-    monitor.write(text)
-end
-
-local function clearRow(y, bg)
+local function clearRow(y, background)
+    monitor.setBackgroundColor(background)
     monitor.setCursorPos(1, y)
-    monitor.setBackgroundColor(bg)
     monitor.write(string.rep(" ", width))
 end
 
--- ===== ARTIFICIAL HORIZON =====
+
+local function centerText(y, text, textColor, background)
+    local x = math.floor((width - #text) / 2) + 1
+
+    monitor.setBackgroundColor(background)
+    monitor.setTextColor(textColor)
+    monitor.setCursorPos(x, y)
+    monitor.write(text)
+end
+
+
+-- =========================
+-- THRUST
+-- =========================
+
+-- We don't care which side the Redstone Link actually is.
+-- Read all six sides and use the strongest analog signal.
+--
+-- Your monitor may pass a weak 0/1 signal,
+-- but the actual Redstone Link should give the real 0-15.
+
+local sides = {
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "front",
+    "back"
+}
+
+local function getThrust()
+    local strongest = 0
+
+    for _, side in ipairs(sides) do
+        local value = redstone.getAnalogInput(side)
+
+        if value > strongest then
+            strongest = value
+        end
+    end
+
+    return strongest
+end
+
+
+-- =========================
+-- ARTIFICIAL HORIZON
+-- =========================
 
 local function drawHorizon(bank, pitch)
-    -- Rows reserved for horizon:
-    -- row 1 = altitude/thrust
-    -- last row = bank angle
+
+    -- First row reserved for ALT / THR.
+    -- Last row reserved for BANK.
     local top = 2
     local bottom = height - 1
 
     local centerX = (width + 1) / 2
     local centerY = (top + bottom) / 2
 
-    -- Prevent tan() going insane near 90 degrees.
+    -- Prevent tan() becoming insane near 90 degrees.
     local visualBank = math.max(-80, math.min(80, bank))
 
-    -- Horizon rotates opposite the aircraft.
-    -- 0.5 compensates somewhat for tall monitor characters.
+    -- Horizon rotates opposite to aircraft bank.
+    -- 0.5 compensates for monitor character proportions.
     local slope = math.tan(math.rad(-visualBank)) * 0.5
 
-    -- Nose up -> horizon moves downward.
-    local pitchOffset = pitch / PITCH_DEGREES_PER_ROW
+    -- Nose up/down moves horizon vertically.
+    local pitchOffset =
+        pitch / PITCH_DEGREES_PER_ROW
 
     for y = top, bottom do
+
         local chars = {}
-        local textCols = {}
-        local bgCols = {}
+        local foreground = {}
+        local background = {}
 
         for x = 1, width do
+
             local horizonY =
                 centerY
                 + pitchOffset
                 + slope * (x - centerX)
 
-            local bg
-
+            -- SKY
             if y < horizonY then
-                bg = colors.lightBlue -- sky
+                background[x] =
+                    colors.toBlit(colors.lightBlue)
+
+            -- GROUND
             else
-                bg = colors.brown     -- ground
+                background[x] =
+                    colors.toBlit(colors.brown)
             end
 
-            -- Draw the actual horizon boundary.
+            -- Horizon line
             if math.abs(y - horizonY) < 0.45 then
                 chars[x] = "-"
-                textCols[x] = colors.toBlit(colors.white)
+                foreground[x] =
+                    colors.toBlit(colors.white)
             else
                 chars[x] = " "
-                textCols[x] = colors.toBlit(colors.white)
+                foreground[x] =
+                    colors.toBlit(colors.white)
             end
-
-            bgCols[x] = colors.toBlit(bg)
         end
 
         monitor.setCursorPos(1, y)
+
         monitor.blit(
             table.concat(chars),
-            table.concat(textCols),
-            table.concat(bgCols)
+            table.concat(foreground),
+            table.concat(background)
         )
     end
 
-    -- Fixed aircraft symbol
+
+    -- =========================
+    -- AIRCRAFT SYMBOL
+    -- =========================
+
     local aircraftY = round(centerY)
 
     local marker = "--+--"
-    local markerX = math.floor((width - #marker) / 2) + 1
+
+    local markerX =
+        math.floor((width - #marker) / 2) + 1
 
     monitor.setCursorPos(markerX, aircraftY)
     monitor.setTextColor(colors.yellow)
+    monitor.setBackgroundColor(colors.black)
     monitor.write(marker)
 end
 
--- ===== MAIN DISPLAY =====
+
+-- =========================
+-- MAIN DISPLAY
+-- =========================
 
 local function drawDisplay()
+
+    -- -------------------------
     -- ALTITUDE
-    local altitude = altitudeSensor.getHeight()
+    -- -------------------------
 
+    local altitude =
+        altitudeSensor.getHeight()
+
+
+    -- -------------------------
     -- GIMBAL
-    local angles = gimbal.getAngles()
+    -- -------------------------
 
-    local xAngle = angles[1]
-    local zAngle = angles[2]
+    local angles =
+        gimbal.getAngles()
 
-    local bank
-    local pitch
+    local bank =
+        angles[BANK_AXIS] * BANK_SIGN
 
-    if FORWARD_AXIS == "z" then
-        -- Plane built facing north/south
-        pitch = xAngle
-        bank = zAngle
-    else
-        -- Plane built facing east/west
-        bank = xAngle
-        pitch = zAngle
-    end
+    local pitch =
+        angles[PITCH_AXIS] * PITCH_SIGN
 
-    bank = bank * BANK_SIGN
-    pitch = pitch * PITCH_SIGN
 
-    -- THRUST / THROTTLE
-    local thrust = redstone.getAnalogInput("right")
+    -- -------------------------
+    -- THRUST
+    -- -------------------------
 
-    -- Artificial horizon first
+    local thrust =
+        getThrust()
+
+
+    -- -------------------------
+    -- DRAW HORIZON
+    -- -------------------------
+
     drawHorizon(bank, pitch)
 
-    -- =============================
-    -- TOP INFORMATION BAR
-    -- =============================
+
+    -- =========================
+    -- TOP BAR
+    -- =========================
 
     clearRow(1, colors.black)
 
-    local altText = "ALT " .. tostring(round(altitude))
-    local thrustText = "THR " .. tostring(thrust)
+    local altitudeText =
+        "ALT " .. tostring(round(altitude))
+
+    local thrustText =
+        "THR " .. tostring(thrust)
 
     monitor.setBackgroundColor(colors.black)
     monitor.setTextColor(colors.white)
 
     monitor.setCursorPos(1, 1)
-    monitor.write(altText)
+    monitor.write(altitudeText)
 
-    monitor.setCursorPos(width - #thrustText + 1, 1)
+    monitor.setCursorPos(
+        width - #thrustText + 1,
+        1
+    )
+
     monitor.write(thrustText)
 
-    -- =============================
-    -- BANK ANGLE BAR
-    -- =============================
+
+    -- =========================
+    -- BOTTOM BANK DISPLAY
+    -- =========================
 
     clearRow(height, colors.black)
 
-    local bankText = string.format(
-        "BANK %+.0f",
-        bank
-    )
+    local bankText =
+        string.format(
+            "BANK %+.0f",
+            bank
+        )
 
     centerText(
         height,
@@ -212,13 +309,19 @@ local function drawDisplay()
     )
 end
 
--- ===== MAIN LOOP =====
 
+-- =========================
+-- MAIN LOOP
+-- =========================
+
+monitor.setBackgroundColor(colors.black)
 monitor.clear()
 
 while true do
+
     drawDisplay()
 
     -- 20 updates per second
     sleep(0.05)
+
 end
