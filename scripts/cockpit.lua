@@ -1,48 +1,100 @@
 -- =========================================================
--- SMALL PLANE COCKPIT DISPLAY V1
--- Create Aeronautics / Simulated + CC:Tweaked
---
--- Displays:
---   Altitude
---   Artificial horizon
---   Bank angle
---   Thrust 0-15
+-- SMALL PLANE COCKPIT V2
+-- Artificial Horizon + Altitude + Thrust + GPWS
 -- =========================================================
 
+local dfpwm = require("cc.audio.dfpwm")
 
--- =========================
+-- =========================================================
 -- SETTINGS
--- =========================
+-- =========================================================
 
--- Gimbal returns:
--- angles[1] = X angle
--- angles[2] = Z angle
---
--- If BANK reacts when you PITCH instead of when you ROLL,
--- change this from 1 to 2.
+-- GIMBAL
 local BANK_AXIS = 1
-
--- Pitch will automatically use the other axis.
 local PITCH_AXIS = 2
 
--- If bank direction is backwards, change 1 to -1.
 local BANK_SIGN = 1
 
--- If horizon moves the wrong direction while pitching,
--- change 1 to -1.
+-- We already determined yours needs to be reversed.
 local PITCH_SIGN = -1
 
--- Bigger number = horizon moves less for pitch.
 local PITCH_DEGREES_PER_ROW = 10
 
 
--- =========================
--- FIND PERIPHERALS
--- =========================
+-- =========================================================
+-- AIRPORT / ALTITUDE SETTINGS
+-- =========================================================
 
-local monitor = peripheral.find("monitor")
-local gimbal = peripheral.find("gimbal_sensor")
-local altitudeSensor = peripheral.find("altitude_sensor")
+-- Minecraft sea level / your airport level.
+local GROUND_LEVEL = 63
+
+-- Radio-altitude-style callouts.
+local ALTITUDE_CALLOUTS = {
+    { altitude = 30, sound = "30.dfpwm" },
+    { altitude = 20, sound = "20.dfpwm" },
+    { altitude = 10, sound = "10.dfpwm" }
+}
+
+
+-- =========================================================
+-- WARNING SETTINGS
+-- =========================================================
+
+-- Change this whenever you want:
+-- 30 = sensitive
+-- 40 = more relaxed
+local BANK_WARNING_ANGLE = 40
+
+-- How often BANK ANGLE can repeat
+-- while you're still banking too far.
+local BANK_WARNING_REPEAT = 3
+
+
+-- Vertical speed is measured in blocks per second.
+
+-- Example:
+-- -8 means falling 8 blocks every second.
+local SINK_RATE_THRESHOLD = -8
+
+-- Only bother with sink-rate warning when below this height.
+local SINK_RATE_MAX_HEIGHT = 40
+
+local SINK_RATE_REPEAT = 3
+
+
+-- More severe descent.
+local PULL_UP_THRESHOLD = -12
+
+-- PULL UP only becomes active when this close to ground.
+local PULL_UP_MAX_HEIGHT = 25
+
+local PULL_UP_REPEAT = 2
+
+
+-- =========================================================
+-- SOUND FILES
+-- =========================================================
+local SOUND_BANK = "bank_angle.dfpwm"
+local SOUND_SINK_RATE = "sink_rate.dfpwm"
+local SOUND_PULL_UP = "pull_up.dfpwm"
+
+
+-- =========================================================
+-- FIND PERIPHERALS
+-- =========================================================
+
+local monitor =
+    peripheral.find("monitor")
+
+local gimbal =
+    peripheral.find("gimbal_sensor")
+
+local altitudeSensor =
+    peripheral.find("altitude_sensor")
+
+local speaker =
+    peripheral.find("speaker")
+
 
 if not monitor then
     error("No monitor found")
@@ -56,56 +108,189 @@ if not altitudeSensor then
     error("No altitude sensor found")
 end
 
+if not speaker then
+    error("No speaker found")
+end
 
--- =========================
+
+-- =========================================================
 -- MONITOR SETUP
--- =========================
+-- =========================================================
 
 monitor.setTextScale(0.5)
 monitor.setCursorBlink(false)
 
-local width, height = monitor.getSize()
+local width, height =
+    monitor.getSize()
 
 
--- =========================
+-- =========================================================
+-- SOUND QUEUE
+-- =========================================================
+
+local soundQueue = {}
+local currentlyPlaying = nil
+
+
+local function soundAlreadyQueued(path)
+
+    if currentlyPlaying == path then
+        return true
+    end
+
+    for _, sound in ipairs(soundQueue) do
+        if sound.path == path then
+            return true
+        end
+    end
+
+    return false
+end
+
+
+local function queueSound(path, priority)
+
+    if not fs.exists(path) then
+        return
+    end
+
+    if soundAlreadyQueued(path) then
+        return
+    end
+
+    table.insert(
+        soundQueue,
+        {
+            path = path,
+            priority = priority or 1
+        }
+    )
+
+    -- Highest priority warning first.
+    table.sort(
+        soundQueue,
+        function(a, b)
+            return a.priority > b.priority
+        end
+    )
+end
+
+
+local function playSound(path)
+
+    currentlyPlaying = path
+
+    local file =
+        fs.open(path, "rb")
+
+    if not file then
+        currentlyPlaying = nil
+        return
+    end
+
+    local decoder =
+        dfpwm.make_decoder()
+
+    while true do
+
+        local chunk =
+            file.read(16 * 1024)
+
+        if not chunk then
+            break
+        end
+
+        local buffer =
+            decoder(chunk)
+
+        while not speaker.playAudio(buffer) do
+            os.pullEvent("speaker_audio_empty")
+        end
+
+    end
+
+    file.close()
+
+    currentlyPlaying = nil
+end
+
+
+local function audioLoop()
+
+    while true do
+
+        if #soundQueue > 0 then
+
+            local sound =
+                table.remove(soundQueue, 1)
+
+            playSound(sound.path)
+
+        else
+
+            sleep(0.05)
+
+        end
+
+    end
+
+end
+
+
+-- =========================================================
 -- HELPERS
--- =========================
+-- =========================================================
 
 local function round(n)
+
     if n >= 0 then
         return math.floor(n + 0.5)
     else
         return math.ceil(n - 0.5)
     end
+
 end
 
 
 local function clearRow(y, background)
+
     monitor.setBackgroundColor(background)
+
     monitor.setCursorPos(1, y)
-    monitor.write(string.rep(" ", width))
+
+    monitor.write(
+        string.rep(" ", width)
+    )
+
 end
 
 
-local function centerText(y, text, textColor, background)
-    local x = math.floor((width - #text) / 2) + 1
+local function centerText(
+    y,
+    text,
+    textColor,
+    background
+)
+
+    local x =
+        math.floor(
+            (width - #text) / 2
+        ) + 1
 
     monitor.setBackgroundColor(background)
+
     monitor.setTextColor(textColor)
+
     monitor.setCursorPos(x, y)
+
     monitor.write(text)
+
 end
 
 
--- =========================
+-- =========================================================
 -- THRUST
--- =========================
-
--- We don't care which side the Redstone Link actually is.
--- Read all six sides and use the strongest analog signal.
---
--- Your monitor may pass a weak 0/1 signal,
--- but the actual Redstone Link should give the real 0-15.
+-- =========================================================
 
 local sides = {
     "top",
@@ -116,51 +301,67 @@ local sides = {
     "back"
 }
 
+
 local function getThrust()
+
     local strongest = 0
 
     for _, side in ipairs(sides) do
-        local value = redstone.getAnalogInput(side)
+
+        local value =
+            redstone.getAnalogInput(side)
 
         if value > strongest then
             strongest = value
         end
+
     end
 
     return strongest
+
 end
 
 
--- =========================
+-- =========================================================
 -- ARTIFICIAL HORIZON
--- =========================
+-- =========================================================
 
 local function drawHorizon(bank, pitch)
 
-    -- First row reserved for ALT / THR.
-    -- Last row reserved for BANK.
     local top = 2
     local bottom = height - 1
 
-    local centerX = (width + 1) / 2
-    local centerY = (top + bottom) / 2
+    local centerX =
+        (width + 1) / 2
 
-    -- Prevent tan() becoming insane near 90 degrees.
-    local visualBank = math.max(-80, math.min(80, bank))
+    local centerY =
+        (top + bottom) / 2
 
-    -- Horizon rotates opposite to aircraft bank.
-    -- 0.5 compensates for monitor character proportions.
-    local slope = math.tan(math.rad(-visualBank)) * 0.5
 
-    -- Nose up/down moves horizon vertically.
+    local visualBank =
+        math.max(
+            -80,
+            math.min(80, bank)
+        )
+
+
+    local slope =
+        math.tan(
+            math.rad(-visualBank)
+        ) * 0.5
+
+
     local pitchOffset =
-        pitch / PITCH_DEGREES_PER_ROW
+        pitch /
+        PITCH_DEGREES_PER_ROW
+
 
     for y = top, bottom do
 
         local chars = {}
         local foreground = {}
         local background = {}
+
 
         for x = 1, width do
 
@@ -169,28 +370,44 @@ local function drawHorizon(bank, pitch)
                 + pitchOffset
                 + slope * (x - centerX)
 
-            -- SKY
+
             if y < horizonY then
-                background[x] =
-                    colors.toBlit(colors.lightBlue)
 
-            -- GROUND
-            else
                 background[x] =
-                    colors.toBlit(colors.brown)
+                    colors.toBlit(
+                        colors.lightBlue
+                    )
+
+            else
+
+                background[x] =
+                    colors.toBlit(
+                        colors.brown
+                    )
+
             end
 
-            -- Horizon line
-            if math.abs(y - horizonY) < 0.45 then
+
+            if math.abs(
+                y - horizonY
+            ) < 0.45 then
+
                 chars[x] = "-"
-                foreground[x] =
-                    colors.toBlit(colors.white)
+
             else
+
                 chars[x] = " "
-                foreground[x] =
-                    colors.toBlit(colors.white)
+
             end
+
+
+            foreground[x] =
+                colors.toBlit(
+                    colors.white
+                )
+
         end
+
 
         monitor.setCursorPos(1, y)
 
@@ -199,101 +416,377 @@ local function drawHorizon(bank, pitch)
             table.concat(foreground),
             table.concat(background)
         )
+
     end
 
 
-    -- =========================
-    -- AIRCRAFT SYMBOL
-    -- =========================
+    -- Aircraft marker
 
-    local aircraftY = round(centerY)
+    local aircraftY =
+        round(centerY)
 
-    local marker = "--+--"
+    local marker =
+        "--+--"
 
     local markerX =
-        math.floor((width - #marker) / 2) + 1
+        math.floor(
+            (width - #marker) / 2
+        ) + 1
 
-    monitor.setCursorPos(markerX, aircraftY)
-    monitor.setTextColor(colors.yellow)
-    monitor.setBackgroundColor(colors.black)
+
+    monitor.setCursorPos(
+        markerX,
+        aircraftY
+    )
+
+    monitor.setTextColor(
+        colors.yellow
+    )
+
+    monitor.setBackgroundColor(
+        colors.black
+    )
+
     monitor.write(marker)
+
 end
 
 
--- =========================
+-- =========================================================
+-- WARNING DISPLAY
+-- =========================================================
+
+local warningText = nil
+local warningUntil = 0
+local warningColor = colors.red
+
+
+local function showWarning(
+    text,
+    duration,
+    color
+)
+
+    warningText = text
+
+    warningUntil =
+        os.clock() + duration
+
+    warningColor =
+        color or colors.red
+
+end
+
+
+-- =========================================================
+-- WARNING STATE
+-- =========================================================
+
+local previousAltitude = nil
+local previousAGL = nil
+local previousTime = nil
+
+local verticalSpeed = 0
+
+local lastBankWarning = -100
+local lastSinkWarning = -100
+local lastPullUpWarning = -100
+
+
+-- =========================================================
+-- WARNING LOGIC
+-- =========================================================
+
+local function updateWarnings(
+    altitude,
+    bank
+)
+
+    local now =
+        os.clock()
+
+    local agl =
+        altitude - GROUND_LEVEL
+
+
+    -- =============================================
+    -- CALCULATE VERTICAL SPEED
+    -- =============================================
+
+    if previousAltitude and previousTime then
+
+        local dt =
+            now - previousTime
+
+        if dt > 0 then
+
+            local rawVS =
+                (altitude - previousAltitude)
+                / dt
+
+            -- Smooth it slightly so tiny sensor jitter
+            -- doesn't trigger warnings.
+            verticalSpeed =
+                verticalSpeed * 0.75
+                + rawVS * 0.25
+
+        end
+
+    end
+
+
+    -- =============================================
+    -- PULL UP
+    -- Highest priority
+    -- =============================================
+
+    local pullUp =
+        agl <= PULL_UP_MAX_HEIGHT
+        and agl > 0
+        and verticalSpeed <= PULL_UP_THRESHOLD
+
+
+    if pullUp then
+
+        showWarning(
+            "PULL UP",
+            1,
+            colors.red
+        )
+
+        if
+            now - lastPullUpWarning
+            >= PULL_UP_REPEAT
+        then
+
+            queueSound(
+                SOUND_PULL_UP,
+                100
+            )
+
+            lastPullUpWarning = now
+
+        end
+
+
+    -- =============================================
+    -- SINK RATE
+    -- =============================================
+
+    elseif
+        agl <= SINK_RATE_MAX_HEIGHT
+        and agl > 0
+        and verticalSpeed <= SINK_RATE_THRESHOLD
+
+    then
+
+        showWarning(
+            "SINK RATE",
+            1,
+            colors.orange
+        )
+
+        if
+            now - lastSinkWarning
+            >= SINK_RATE_REPEAT
+        then
+
+            queueSound(
+                SOUND_SINK_RATE,
+                80
+            )
+
+            lastSinkWarning = now
+
+        end
+
+
+    -- =============================================
+    -- BANK ANGLE
+    -- =============================================
+
+    elseif
+        math.abs(bank)
+        >= BANK_WARNING_ANGLE
+
+    then
+
+        showWarning(
+            "BANK ANGLE",
+            1,
+            colors.orange
+        )
+
+        if
+            now - lastBankWarning
+            >= BANK_WARNING_REPEAT
+        then
+
+            queueSound(
+                SOUND_BANK,
+                60
+            )
+
+            lastBankWarning = now
+
+        end
+
+    end
+
+
+    -- =============================================
+    -- ALTITUDE CALLOUTS
+    -- =============================================
+
+    if previousAGL then
+
+        -- Only announce while descending.
+        if verticalSpeed < 0 then
+
+            -- Don't play normal altitude callouts
+            -- while screaming PULL UP.
+            if not pullUp then
+
+                for _, callout
+                    in ipairs(
+                        ALTITUDE_CALLOUTS
+                    )
+                do
+
+                    if
+                        previousAGL
+                            > callout.altitude
+
+                        and agl
+                            <= callout.altitude
+                    then
+
+                        queueSound(
+                            callout.sound,
+                            20
+                        )
+
+                    end
+
+                end
+
+            end
+
+        end
+
+    end
+
+
+    previousAltitude = altitude
+    previousAGL = agl
+    previousTime = now
+
+end
+
+
+-- =========================================================
 -- MAIN DISPLAY
--- =========================
+-- =========================================================
 
 local function drawDisplay()
-
-    -- -------------------------
-    -- ALTITUDE
-    -- -------------------------
 
     local altitude =
         altitudeSensor.getHeight()
 
 
-    -- -------------------------
-    -- GIMBAL
-    -- -------------------------
-
     local angles =
         gimbal.getAngles()
 
+
     local bank =
-        angles[BANK_AXIS] * BANK_SIGN
+        angles[BANK_AXIS]
+        * BANK_SIGN
+
 
     local pitch =
-        angles[PITCH_AXIS] * PITCH_SIGN
+        angles[PITCH_AXIS]
+        * PITCH_SIGN
 
-
-    -- -------------------------
-    -- THRUST
-    -- -------------------------
 
     local thrust =
         getThrust()
 
 
-    -- -------------------------
-    -- DRAW HORIZON
-    -- -------------------------
+    -- WARNING CALCULATIONS
 
-    drawHorizon(bank, pitch)
+    updateWarnings(
+        altitude,
+        bank
+    )
 
 
-    -- =========================
+    -- ARTIFICIAL HORIZON
+
+    drawHorizon(
+        bank,
+        pitch
+    )
+
+
+    -- =====================================================
     -- TOP BAR
-    -- =========================
+    -- =====================================================
 
-    clearRow(1, colors.black)
+    clearRow(
+        1,
+        colors.black
+    )
+
 
     local altitudeText =
-        "ALT " .. tostring(round(altitude))
+        "ALT "
+        .. tostring(
+            round(altitude)
+        )
+
 
     local thrustText =
-        "THR " .. tostring(thrust)
+        "THR "
+        .. tostring(thrust)
 
-    monitor.setBackgroundColor(colors.black)
-    monitor.setTextColor(colors.white)
+
+    monitor.setBackgroundColor(
+        colors.black
+    )
+
+    monitor.setTextColor(
+        colors.white
+    )
+
 
     monitor.setCursorPos(1, 1)
-    monitor.write(altitudeText)
+
+    monitor.write(
+        altitudeText
+    )
+
 
     monitor.setCursorPos(
-        width - #thrustText + 1,
+        width
+        - #thrustText
+        + 1,
         1
     )
 
-    monitor.write(thrustText)
+    monitor.write(
+        thrustText
+    )
 
 
-    -- =========================
-    -- BOTTOM BANK DISPLAY
-    -- =========================
+    -- =====================================================
+    -- BANK DISPLAY
+    -- =====================================================
 
-    clearRow(height, colors.black)
+    clearRow(
+        height,
+        colors.black
+    )
+
 
     local bankText =
         string.format(
@@ -301,27 +794,70 @@ local function drawDisplay()
             bank
         )
 
+
     centerText(
         height,
         bankText,
         colors.white,
         colors.black
     )
+
+
+    -- =====================================================
+    -- WARNING MESSAGE
+    -- =====================================================
+
+    if
+        warningText
+        and os.clock()
+            < warningUntil
+    then
+
+        centerText(
+            2,
+            warningText,
+            warningColor,
+            colors.black
+        )
+
+    else
+
+        warningText = nil
+
+    end
+
 end
 
 
--- =========================
--- MAIN LOOP
--- =========================
+-- =========================================================
+-- DISPLAY LOOP
+-- =========================================================
 
-monitor.setBackgroundColor(colors.black)
-monitor.clear()
+local function displayLoop()
 
-while true do
+    monitor.setBackgroundColor(
+        colors.black
+    )
 
-    drawDisplay()
+    monitor.clear()
 
-    -- 20 updates per second
-    sleep(0.05)
+
+    while true do
+
+        drawDisplay()
+
+        sleep(0.05)
+
+    end
 
 end
+
+
+-- =========================================================
+-- RUN DISPLAY + AUDIO AT SAME TIME
+-- =========================================================
+
+parallel.waitForAny(
+    displayLoop,
+    audioLoop
+)
