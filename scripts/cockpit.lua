@@ -30,7 +30,7 @@ local BANK_SIGN = 1
 
 -- If horizon moves the wrong direction while pitching,
 -- change 1 to -1.
-local PITCH_SIGN = 1
+local PITCH_SIGN = -1
 
 -- Bigger number = horizon moves less for pitch.
 local PITCH_DEGREES_PER_ROW = 10
