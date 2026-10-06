@@ -1,38 +1,12 @@
 -- =========================================================
--- SMALL PLANE COCKPIT - CC:SABLE VERSION
---
--- Requires:
---   CC:Sable
---   Advanced Monitor
---   Speaker
---   Redstone Link for throttle
---   Downward Optical Sensor
---
--- Flight sensors are NOT required.
+-- SMALL PLANE COCKPIT - CC:SABLE V2
 -- =========================================================
 
 local dfpwm = require("cc.audio.dfpwm")
 
 
 -- =========================================================
--- AIRPORT DATABASE
--- =========================================================
---
--- x / z:
---     Approximate centre of airport/runway.
---
--- elevation:
---     ALT value which should count as AGL 0 at this airport.
---     Easiest way:
---       Park plane on runway and look at displayed ALT.
---
--- radius:
---     Inside this horizontal radius:
---       - airport AGL is enabled
---       - landing callouts are enabled
---       - optical TERRAIN warning is disabled
---
--- Add as many airports as you want.
+-- AIRPORTS
 -- =========================================================
 
 local AIRPORTS = {
@@ -44,36 +18,18 @@ local AIRPORTS = {
         radius = 200
     },
 
-    -- Example:
-    --
     -- HOME = {
     --     x = 100,
     --     z = -300,
     --     elevation = 63,
     --     radius = 200
     -- },
-    --
-    -- THEMEPARK = {
-    --     x = -900,
-    --     z = 450,
-    --     elevation = 64,
-    --     radius = 200
-    -- }
 
 }
 
 
 -- =========================================================
--- SABLE ORIENTATION SETTINGS
--- =========================================================
---
--- Your tests strongly suggest:
---
--- Euler 1 = bank / roll
--- Euler 2 = yaw
--- Euler 3 = pitch
---
--- If something is wrong, these are easy to change.
+-- ORIENTATION
 -- =========================================================
 
 local BANK_EULER_AXIS = 1
@@ -82,145 +38,57 @@ local PITCH_EULER_AXIS = 3
 local BANK_SIGN = 1
 local PITCH_SIGN = 1
 
--- If level flight does not show approximately 0:
---
--- Example:
--- display says BANK +3 while perfectly level
--- set BANK_ZERO_DEG = 3
---
 local BANK_ZERO_DEG = 0
 local PITCH_ZERO_DEG = 0
-
-
--- =========================================================
--- DISPLAY SETTINGS
--- =========================================================
 
 local PITCH_DEGREES_PER_ROW = 10
 
 
 -- =========================================================
--- THROTTLE
--- =========================================================
---
--- nil = automatically find strongest redstone input from
---       a side which is NOT occupied by a CC peripheral.
---
--- You can instead force:
--- "left", "right", "top", "bottom", "front", "back"
--- =========================================================
-
-local THRUST_SIDE = nil
-
-
--- =========================================================
--- BANK WARNING
+-- WARNINGS
 -- =========================================================
 
 local BANK_WARNING_ANGLE = 40
 local BANK_WARNING_REPEAT = 3
 
-
--- =========================================================
--- STALL
--- =========================================================
---
--- These WILL need tuning after watching your normal speeds.
---
--- Stall now requires:
---   low speed
---   high AoA
---   nose at least slightly raised
--- =========================================================
-
 local STALL_SPEED = 10
 local STALL_MIN_SPEED = 2
-
 local STALL_AOA = 15
 local STALL_MIN_PITCH = 5
-
 local STALL_WARNING_REPEAT = 1.2
-
-
--- =========================================================
--- OVERSPEED
--- =========================================================
---
--- Watch SPD during a normal flight and adjust this.
--- =========================================================
 
 local OVERSPEED_SPEED = 50
 local OVERSPEED_REPEAT = 1.0
-
-
--- =========================================================
--- SINK RATE
--- =========================================================
 
 local SINK_RATE_THRESHOLD = -8
 local SINK_RATE_MAX_AGL = 40
 local SINK_RATE_REPEAT = 2.5
 
-
--- =========================================================
--- PULL UP
--- =========================================================
---
--- Instead of only looking at vertical speed, this estimates
--- how many seconds remain before reaching runway level.
--- =========================================================
-
 local PULL_UP_TIME_TO_GROUND = 2.2
 local PULL_UP_MIN_DESCENT = -4
 local PULL_UP_REPEAT = 1.5
 
-
--- =========================================================
--- TERRAIN
--- =========================================================
---
--- Outside airport radius:
---
--- Optical sensor sees ANY block within its range
--- =
--- TERRAIN TERRAIN
--- =========================================================
-
 local TERRAIN_REPEAT = 1.2
-
-
--- =========================================================
--- RETARD
--- =========================================================
 
 local RETARD_AGL = 5
 
-local RETARD_THRUST_THRESHOLD = 2
+-- 0 = lowest running power.
+-- RETARD stops when throttle reaches 0 OR OFF (14/15).
+local RETARD_THRUST_THRESHOLD = 0
 
 local RETARD_REPEAT = 1.2
 
 
 -- =========================================================
--- AUDIO
+-- SOUNDS
 -- =========================================================
 
-local SOUND_BANK =
-    "bank_angle.dfpwm"
-
-local SOUND_STALL =
-    "stall.dfpwm"
-
-local SOUND_OVERSPEED =
-    "overspeed.dfpwm"
-
-local SOUND_SINK_RATE =
-    "sink_rate.dfpwm"
-
-local SOUND_PULL_UP =
-    "pull_up.dfpwm"
-
-local SOUND_TERRAIN =
-    "terrain.dfpwm"
+local SOUND_BANK = "bank_angle.dfpwm"
+local SOUND_STALL = "stall.dfpwm"
+local SOUND_OVERSPEED = "overspeed.dfpwm"
+local SOUND_SINK_RATE = "sink_rate.dfpwm"
+local SOUND_PULL_UP = "pull_up.dfpwm"
+local SOUND_TERRAIN = "terrain.dfpwm"
 
 local SOUND_APPROACHING_MINIMUMS =
     "approaching_minimums.dfpwm"
@@ -255,7 +123,7 @@ local ALTITUDE_CALLOUTS = {
 
 
 -- =========================================================
--- FIND PERIPHERALS
+-- PERIPHERALS
 -- =========================================================
 
 local monitor =
@@ -268,7 +136,6 @@ local optical =
     peripheral.find("optical_sensor")
 
 
--- Fallback: find optical sensor based on methods
 if not optical then
 
     for _, name in ipairs(peripheral.getNames()) do
@@ -310,7 +177,7 @@ end
 
 
 -- =========================================================
--- MONITOR SETUP
+-- MONITOR
 -- =========================================================
 
 monitor.setTextScale(0.5)
@@ -321,7 +188,7 @@ local width, height =
 
 
 -- =========================================================
--- GENERAL HELPERS
+-- HELPERS
 -- =========================================================
 
 local function round(n)
@@ -335,11 +202,11 @@ local function round(n)
 end
 
 
-local function clamp(n, minimum, maximum)
+local function clamp(n, low, high)
 
     return math.max(
-        minimum,
-        math.min(maximum, n)
+        low,
+        math.min(high, n)
     )
 
 end
@@ -347,8 +214,7 @@ end
 
 local function normalizeDegrees(angle)
 
-    angle =
-        angle % 360
+    angle = angle % 360
 
     if angle > 180 then
         angle = angle - 360
@@ -367,12 +233,16 @@ local function atan2(y, x)
 
     if x > 0 then
         return math.atan(y / x)
+
     elseif x < 0 and y >= 0 then
         return math.atan(y / x) + math.pi
+
     elseif x < 0 and y < 0 then
         return math.atan(y / x) - math.pi
+
     elseif x == 0 and y > 0 then
         return math.pi / 2
+
     elseif x == 0 and y < 0 then
         return -math.pi / 2
     end
@@ -382,9 +252,9 @@ local function atan2(y, x)
 end
 
 
-local function clearRow(y, background)
+local function clearRow(y, bg)
 
-    monitor.setBackgroundColor(background)
+    monitor.setBackgroundColor(bg)
     monitor.setCursorPos(1, y)
 
     monitor.write(
@@ -394,57 +264,25 @@ local function clearRow(y, background)
 end
 
 
-local function writeLeft(
+local function writeAt(
+    x,
     y,
     text,
-    textColor,
-    background
+    fg,
+    bg
 )
-
-    monitor.setTextColor(
-        textColor or colors.white
-    )
-
-    monitor.setBackgroundColor(
-        background or colors.black
-    )
-
-    monitor.setCursorPos(1, y)
-
-    monitor.write(
-        string.sub(text, 1, width)
-    )
-
-end
-
-
-local function writeRight(
-    y,
-    text,
-    textColor,
-    background
-)
-
-    monitor.setTextColor(
-        textColor or colors.white
-    )
-
-    monitor.setBackgroundColor(
-        background or colors.black
-    )
-
-    local x =
-        width - #text + 1
-
-    if x < 1 then
-        x = 1
-    end
 
     monitor.setCursorPos(x, y)
 
-    monitor.write(
-        string.sub(text, 1, width)
+    monitor.setTextColor(
+        fg or colors.white
     )
+
+    monitor.setBackgroundColor(
+        bg or colors.black
+    )
+
+    monitor.write(text)
 
 end
 
@@ -452,17 +290,9 @@ end
 local function writeCenter(
     y,
     text,
-    textColor,
-    background
+    fg,
+    bg
 )
-
-    monitor.setTextColor(
-        textColor or colors.white
-    )
-
-    monitor.setBackgroundColor(
-        background or colors.black
-    )
 
     local x =
         math.floor(
@@ -473,11 +303,79 @@ local function writeCenter(
         x = 1
     end
 
-    monitor.setCursorPos(x, y)
-
-    monitor.write(
-        string.sub(text, 1, width)
+    writeAt(
+        x,
+        y,
+        string.sub(text, 1, width),
+        fg,
+        bg
     )
+
+end
+
+
+-- Write two values without letting them overwrite each other.
+local function drawPairRow(
+    y,
+    leftText,
+    rightText,
+    compactLeft,
+    compactRight
+)
+
+    clearRow(y, colors.black)
+
+    if
+        #leftText
+        + #rightText
+        + 1
+        > width
+    then
+
+        leftText =
+            compactLeft or leftText
+
+        rightText =
+            compactRight or rightText
+
+    end
+
+
+    writeAt(
+        1,
+        y,
+        leftText,
+        colors.white,
+        colors.black
+    )
+
+
+    local rightX =
+        width
+        - #rightText
+        + 1
+
+
+    if rightX <= #leftText then
+
+        -- Emergency compacting if values become huge.
+        rightX =
+            #leftText + 1
+
+    end
+
+
+    if rightX <= width then
+
+        writeAt(
+            rightX,
+            y,
+            rightText,
+            colors.white,
+            colors.black
+        )
+
+    end
 
 end
 
@@ -487,9 +385,7 @@ end
 -- =========================================================
 
 local soundQueue = {}
-
 local currentlyPlaying = nil
-
 local queueOrder = 0
 
 
@@ -632,7 +528,6 @@ local function audioLoop()
                     1
                 )
 
-
             playSound(
                 sound.path
             )
@@ -649,7 +544,7 @@ end
 
 
 -- =========================================================
--- THRUST
+-- THROTTLE
 -- =========================================================
 
 local sides = {
@@ -662,28 +557,17 @@ local sides = {
 }
 
 
-local function getThrust()
-
-    if THRUST_SIDE then
-
-        return redstone.getAnalogInput(
-            THRUST_SIDE
-        )
-
-    end
-
+local function getRawThrust()
 
     local strongest = 0
 
-
     for _, side in ipairs(sides) do
 
-        -- Ignore monitor, speaker, optical sensor etc.
+        -- Ignore monitor/speaker/optical peripheral sides.
         if not peripheral.isPresent(side) then
 
             local value =
                 redstone.getAnalogInput(side)
-
 
             if value > strongest then
                 strongest = value
@@ -693,23 +577,51 @@ local function getThrust()
 
     end
 
-
     return strongest
 
 end
 
 
+local function decodeThrust(raw)
+
+    -- YOUR transmission:
+    --
+    -- 0  = lowest running power
+    -- 13 = maximum power
+    -- 14 = OFF
+    -- 15 = OFF
+
+    local off =
+        raw >= 14
+
+
+    local power
+
+    if off then
+        power = 0
+    else
+        power = raw
+    end
+
+
+    return {
+        raw = raw,
+        power = power,
+        off = off
+    }
+
+end
+
+
 -- =========================================================
--- AIRPORT SYSTEM
+-- AIRPORTS
 -- =========================================================
 
 local function getClosestAirport(position)
 
     local closestName = nil
     local closest = nil
-
-    local closestDistance =
-        math.huge
+    local closestDistance = math.huge
 
 
     for name, airport in pairs(AIRPORTS) do
@@ -785,7 +697,7 @@ end
 
 
 -- =========================================================
--- ARTIFICIAL HORIZON
+-- HORIZON
 -- =========================================================
 
 local ladderAngles = {
@@ -804,10 +716,7 @@ local function drawHorizon(
 )
 
     local top = 3
-
-    local bottom =
-        height - 2
-
+    local bottom = height - 2
 
     local centerX =
         (width + 1) / 2
@@ -842,8 +751,8 @@ local function drawHorizon(
     for y = top, bottom do
 
         local chars = {}
-        local foreground = {}
-        local background = {}
+        local fg = {}
+        local bg = {}
 
 
         for x = 1, width do
@@ -857,14 +766,14 @@ local function drawHorizon(
 
             if y < horizonY then
 
-                background[x] =
+                bg[x] =
                     colors.toBlit(
                         colors.lightBlue
                     )
 
             else
 
-                background[x] =
+                bg[x] =
                     colors.toBlit(
                         colors.brown
                     )
@@ -874,15 +783,11 @@ local function drawHorizon(
 
             chars[x] = " "
 
-            foreground[x] =
+            fg[x] =
                 colors.toBlit(
                     colors.white
                 )
 
-
-            -- =====================================
-            -- PITCH LADDER
-            -- =====================================
 
             for _, ladderAngle
                 in ipairs(ladderAngles)
@@ -900,17 +805,12 @@ local function drawHorizon(
 
                 local halfWidth = 2
 
-                if
-                    math.abs(ladderAngle)
-                    == 20
-                then
+
+                if math.abs(ladderAngle) == 20 then
 
                     halfWidth = 3
 
-                elseif
-                    math.abs(ladderAngle)
-                    == 30
-                then
+                elseif math.abs(ladderAngle) == 30 then
 
                     halfWidth = 4
 
@@ -941,7 +841,6 @@ local function drawHorizon(
             end
 
 
-            -- Main horizon overrides ladder
             if
                 math.abs(
                     y - horizonY
@@ -964,14 +863,12 @@ local function drawHorizon(
 
         monitor.blit(
             table.concat(chars),
-            table.concat(foreground),
-            table.concat(background)
+            table.concat(fg),
+            table.concat(bg)
         )
 
     end
 
-
-    -- Fixed aircraft symbol
 
     local aircraftY =
         round(centerY)
@@ -988,21 +885,13 @@ local function drawHorizon(
         + 1
 
 
-    monitor.setCursorPos(
+    writeAt(
         markerX,
-        aircraftY
-    )
-
-
-    monitor.setTextColor(
-        colors.yellow
-    )
-
-    monitor.setBackgroundColor(
+        aircraftY,
+        marker,
+        colors.yellow,
         colors.black
     )
-
-    monitor.write(marker)
 
 end
 
@@ -1041,23 +930,10 @@ local function drawBankScale(bank)
     }
 
 
-    monitor.setTextColor(
-        colors.white
-    )
-
-    monitor.setBackgroundColor(
-        colors.black
-    )
-
-
     for _, tick in ipairs(ticks) do
 
         local angle =
             tick[1]
-
-        local symbol =
-            tick[2]
-
 
         local x =
             round(
@@ -1081,17 +957,16 @@ local function drawBankScale(bank)
             )
 
 
-        monitor.setCursorPos(
+        writeAt(
             x,
-            2
+            2,
+            tick[2],
+            colors.white,
+            colors.black
         )
-
-        monitor.write(symbol)
 
     end
 
-
-    -- Bank pointer
 
     local pointerBank =
         clamp(
@@ -1123,34 +998,15 @@ local function drawBankScale(bank)
         )
 
 
-    monitor.setCursorPos(
+    writeAt(
         pointerX,
-        2
+        2,
+        "^",
+        colors.yellow,
+        colors.black
     )
-
-    monitor.setTextColor(
-        colors.yellow
-    )
-
-    monitor.write("^")
 
 end
-
-
--- =========================================================
--- WARNING STATE
--- =========================================================
-
-local lastBank = -100
-local lastStall = -100
-local lastOverspeed = -100
-local lastSinkRate = -100
-local lastPullUp = -100
-local lastTerrain = -100
-local lastRetard = -100
-
-local previousAGL = nil
-local previousAirport = nil
 
 
 -- =========================================================
@@ -1247,8 +1103,6 @@ local function getFlightData()
 
         pose = pose,
 
-        velocity = velocity,
-
         altitude =
             pose.position.y,
 
@@ -1261,17 +1115,32 @@ local function getFlightData()
         verticalSpeed =
             verticalSpeed,
 
-        horizontalSpeed =
-            horizontalSpeed,
-
-        flightPathAngle =
-            flightPathAngle,
-
         aoa = aoa
 
     }
 
 end
+
+
+-- =========================================================
+-- WARNING STATE
+-- =========================================================
+
+local lastBank = -100
+local lastStall = -100
+local lastOverspeed = -100
+local lastSinkRate = -100
+local lastPullUp = -100
+local lastTerrain = -100
+local lastRetard = -100
+
+local previousAGL = nil
+local previousAirport = nil
+
+-- Used to VERIFY actual descent.
+local previousAltitude = nil
+local previousAltitudeTime = nil
+local altitudeTrendVS = 0
 
 
 -- =========================================================
@@ -1286,6 +1155,54 @@ local function updateWarnings(
     local now =
         os.clock()
 
+
+    -- =====================================================
+    -- CONFIRM WHETHER AIRCRAFT IS ACTUALLY DESCENDING
+    -- =====================================================
+
+    if
+        previousAltitude
+        and previousAltitudeTime
+    then
+
+        local dt =
+            now
+            - previousAltitudeTime
+
+
+        if dt > 0 then
+
+            altitudeTrendVS =
+                (
+                    data.altitude
+                    - previousAltitude
+                )
+                / dt
+
+        end
+
+    end
+
+
+    previousAltitude =
+        data.altitude
+
+    previousAltitudeTime =
+        now
+
+
+    -- BOTH must indicate descent.
+    --
+    -- This specifically prevents PULL UP during takeoff.
+    local descending =
+        data.verticalSpeed < -0.05
+        and
+        altitudeTrendVS < -0.05
+
+
+    -- =====================================================
+    -- AIRPORT
+    -- =====================================================
 
     local airportName,
           airport,
@@ -1315,15 +1232,24 @@ local function updateWarnings(
     end
 
 
-    -- =============================================
-    -- OPTICAL TERRAIN
-    -- =============================================
+    -- =====================================================
+    -- TERRAIN
+    -- =====================================================
+    --
+    -- IMPORTANT:
+    --
+    -- Optical terrain detection is ONLY active OUTSIDE
+    -- registered airport radius.
+    --
+    -- Inside airport:
+    --     TERRAIN = DISABLED
+    --
+    -- Outside airport:
+    --     ANY optical hit = TERRAIN
+    -- =====================================================
 
     local terrainDetected =
         false
-
-    local terrainDistance =
-        nil
 
 
     if not insideAirport then
@@ -1331,20 +1257,12 @@ local function updateWarnings(
         terrainDetected =
             optical.hasHit()
 
-
-        if terrainDetected then
-
-            terrainDistance =
-                optical.getDistance()
-
-        end
-
     end
 
 
-    -- =============================================
+    -- =====================================================
     -- PULL UP
-    -- =============================================
+    -- =====================================================
 
     local timeToGround =
         math.huge
@@ -1353,7 +1271,7 @@ local function updateWarnings(
     if
         agl
         and agl > 0
-        and data.verticalSpeed < 0
+        and descending
     then
 
         timeToGround =
@@ -1368,72 +1286,67 @@ local function updateWarnings(
         agl
         and agl > 0
 
-        and
+        and descending
 
-        data.verticalSpeed
-        <= PULL_UP_MIN_DESCENT
+        -- Explicitly MUST be negative.
+        and data.verticalSpeed < 0
 
-        and
+        and data.verticalSpeed
+            <= PULL_UP_MIN_DESCENT
 
-        timeToGround
-        <= PULL_UP_TIME_TO_GROUND
+        and timeToGround
+            <= PULL_UP_TIME_TO_GROUND
 
 
-    -- =============================================
+    -- =====================================================
     -- STALL
-    -- =============================================
+    -- =====================================================
 
     local stall =
         data.speed
             >= STALL_MIN_SPEED
 
-        and
-
-        data.speed
+        and data.speed
             <= STALL_SPEED
 
-        and
-
-        data.aoa
+        and data.aoa
             >= STALL_AOA
 
-        and
-
-        data.pitch
+        and data.pitch
             >= STALL_MIN_PITCH
 
 
-    -- =============================================
+    -- =====================================================
     -- OVERSPEED
-    -- =============================================
+    -- =====================================================
 
     local overspeed =
         data.speed
         >= OVERSPEED_SPEED
 
 
-    -- =============================================
+    -- =====================================================
     -- SINK RATE
-    -- =============================================
+    -- =====================================================
 
     local sinkRate =
         agl
         and agl > 0
 
-        and
+        and descending
 
-        agl
-        <= SINK_RATE_MAX_AGL
+        and data.verticalSpeed < 0
 
-        and
+        and agl
+            <= SINK_RATE_MAX_AGL
 
-        data.verticalSpeed
-        <= SINK_RATE_THRESHOLD
+        and data.verticalSpeed
+            <= SINK_RATE_THRESHOLD
 
 
-    -- =============================================
-    -- BANK ANGLE
-    -- =============================================
+    -- =====================================================
+    -- BANK
+    -- =====================================================
 
     local bankAngle =
         math.abs(
@@ -1442,33 +1355,32 @@ local function updateWarnings(
         >= BANK_WARNING_ANGLE
 
 
-    -- =============================================
+    -- =====================================================
     -- RETARD
-    -- =============================================
+    -- =====================================================
 
     local retard =
         agl
         and agl > 0
 
-        and
+        and agl
+            <= RETARD_AGL
 
-        agl <= RETARD_AGL
+        and descending
 
-        and
+        -- 14/15 = OFF, so NEVER say RETARD.
+        and not thrust.off
 
-        data.verticalSpeed < 0
-
-        and
-
-        thrust
-        > RETARD_THRUST_THRESHOLD
+        -- 0 is your lowest running thrust and counts
+        -- as sufficiently retarded.
+        and thrust.power
+            > RETARD_THRUST_THRESHOLD
 
 
     -- =====================================================
-    -- WARNING PRIORITY
+    -- PRIORITY
     -- =====================================================
 
-    -- PULL UP
     if pullUp then
 
         showWarning(
@@ -1493,7 +1405,6 @@ local function updateWarnings(
         end
 
 
-    -- TERRAIN
     elseif terrainDetected then
 
         showWarning(
@@ -1518,7 +1429,6 @@ local function updateWarnings(
         end
 
 
-    -- STALL
     elseif stall then
 
         showWarning(
@@ -1543,7 +1453,6 @@ local function updateWarnings(
         end
 
 
-    -- OVERSPEED
     elseif overspeed then
 
         showWarning(
@@ -1568,7 +1477,6 @@ local function updateWarnings(
         end
 
 
-    -- SINK RATE
     elseif sinkRate then
 
         showWarning(
@@ -1593,7 +1501,6 @@ local function updateWarnings(
         end
 
 
-    -- BANK ANGLE
     elseif bankAngle then
 
         showWarning(
@@ -1618,7 +1525,6 @@ local function updateWarnings(
         end
 
 
-    -- RETARD
     elseif retard then
 
         showWarning(
@@ -1651,7 +1557,6 @@ local function updateWarnings(
 
     if insideAirport then
 
-        -- Reset crossing detection if we changed airports.
         if previousAirport ~= airportName then
 
             previousAGL = nil
@@ -1660,10 +1565,10 @@ local function updateWarnings(
         end
 
 
+        -- ALSO requires confirmed descent.
         if
             previousAGL
-            and
-            data.verticalSpeed < 0
+            and descending
         then
 
             for _, callout
@@ -1682,15 +1587,12 @@ local function updateWarnings(
                     <= callout.altitude
                 then
 
-                    -- Altitude first
                     queueSound(
                         callout.sound,
                         30
                     )
 
 
-                    -- Then:
-                    -- APPROACHING MINIMUMS / MINIMUMS
                     if callout.after then
 
                         queueSound(
@@ -1726,14 +1628,11 @@ local function updateWarnings(
         airportName =
             airportName,
 
-        airport =
-            airport,
+        insideAirport =
+            insideAirport,
 
         airportDistance =
             airportDistance,
-
-        insideAirport =
-            insideAirport,
 
         agl =
             agl,
@@ -1741,11 +1640,8 @@ local function updateWarnings(
         terrainDetected =
             terrainDetected,
 
-        terrainDistance =
-            terrainDistance,
-
-        timeToGround =
-            timeToGround
+        descending =
+            descending
 
     }
 
@@ -1762,133 +1658,139 @@ local function drawDisplay()
         getFlightData()
 
 
+    local rawThrust =
+        getRawThrust()
+
+
     local thrust =
-        getThrust()
+        decodeThrust(
+            rawThrust
+        )
 
 
-    local warningData =
+    local state =
         updateWarnings(
             data,
             thrust
         )
 
 
-    -- =============================================
-    -- HORIZON
-    -- =============================================
-
+    -- Horizon
     drawHorizon(
         data.bank,
         data.pitch
     )
 
 
-    -- =============================================
-    -- BANK SCALE
-    -- =============================================
-
+    -- Bank ticks
     drawBankScale(
         data.bank
     )
 
 
-    -- =============================================
-    -- TOP ROW
-    -- =============================================
+    -- =====================================================
+    -- TOP: SPEED + ALTITUDE
+    -- =====================================================
+    --
+    -- Old version placed ALT in the centre and overwrote
+    -- the speed value on a 1-block monitor.
+    --
+    -- This version explicitly reserves left/right space.
+    -- =====================================================
 
-    clearRow(
-        1,
-        colors.black
-    )
-
-
-    writeLeft(
-        1,
-        string.format(
-            "SPD %.1f",
-            data.speed
+    local speedNumber =
+        tostring(
+            round(
+                data.speed
+            )
         )
-    )
 
 
-    writeCenter(
-        1,
-        string.format(
-            "ALT %.0f",
-            data.altitude
+    local altitudeNumber =
+        tostring(
+            round(
+                data.altitude
+            )
         )
-    )
 
 
-    writeRight(
+    drawPairRow(
+
         1,
-        "T "
-        .. tostring(thrust)
+
+        "SPD " .. speedNumber,
+
+        "ALT " .. altitudeNumber,
+
+        "S" .. speedNumber,
+
+        "A" .. altitudeNumber
+
     )
 
 
-    -- =============================================
-    -- SECOND LAST ROW
-    -- AGL + VERTICAL SPEED
-    -- =============================================
-
-    clearRow(
-        height - 1,
-        colors.black
-    )
-
+    -- =====================================================
+    -- AGL + VS
+    -- =====================================================
 
     local aglText
+    local compactAGL
 
 
-    if warningData.agl then
-
-        local shortName =
-            string.sub(
-                warningData.airportName,
-                1,
-                5
-            )
-
+    if state.agl then
 
         aglText =
             "AGL "
             .. tostring(
                 round(
-                    warningData.agl
+                    state.agl
                 )
             )
-            .. " "
-            .. shortName
+
+        compactAGL =
+            "G"
+            .. tostring(
+                round(
+                    state.agl
+                )
+            )
 
     else
 
         aglText =
             "AGL --"
 
+        compactAGL =
+            "G--"
+
     end
 
 
-    writeLeft(
-        height - 1,
-        aglText
-    )
-
-
-    writeRight(
-        height - 1,
-
+    local vsNumber =
         string.format(
-            "VS %+.1f",
+            "%+.1f",
             data.verticalSpeed
         )
+
+
+    drawPairRow(
+
+        height - 1,
+
+        aglText,
+
+        "VS " .. vsNumber,
+
+        compactAGL,
+
+        "V" .. vsNumber
+
     )
 
 
-    -- =============================================
-    -- LAST ROW
-    -- BANK / PITCH / AOA
-    -- =============================================
+    -- =====================================================
+    -- BANK / PITCH / THRUST
+    -- =====================================================
 
     clearRow(
         height,
@@ -1896,26 +1798,44 @@ local function drawDisplay()
     )
 
 
-    local attitudeText =
+    local thrustText
+
+    if thrust.off then
+
+        thrustText =
+            "TOFF"
+
+    else
+
+        thrustText =
+            "T"
+            .. tostring(
+                thrust.power
+            )
+
+    end
+
+
+    local bottomText =
         string.format(
-            "BNK %+.0f PIT %+.0f AOA %.0f",
+            "B%+.0f P%+.0f %s",
             data.bank,
             data.pitch,
-            data.aoa
+            thrustText
         )
 
 
     writeCenter(
         height,
-        attitudeText,
+        bottomText,
         colors.white,
         colors.black
     )
 
 
-    -- =============================================
-    -- WARNING OVER BANK SCALE
-    -- =============================================
+    -- =====================================================
+    -- WARNING
+    -- =====================================================
 
     if
         warningText
@@ -1948,7 +1868,7 @@ end
 
 
 -- =========================================================
--- DISPLAY LOOP
+-- LOOPS
 -- =========================================================
 
 local function displayLoop()
@@ -1970,10 +1890,6 @@ local function displayLoop()
 
 end
 
-
--- =========================================================
--- START
--- =========================================================
 
 parallel.waitForAny(
     displayLoop,
