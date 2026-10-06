@@ -11,19 +11,19 @@ local dfpwm = require("cc.audio.dfpwm")
 
 local AIRPORTS = {
 
-    TEST = {
-        x = -676,
-        z = -1316,
-        elevation = -56,
-        radius = 200
+    SPAWN = {
+        x = 97,
+        z = 329,
+        elevation = 62,
+        radius = 500
     },
 
-    -- HOME = {
-    --     x = 100,
-    --     z = -300,
-    --     elevation = 63,
-    --     radius = 200
-    -- },
+    HOME = {
+         x = -657,
+         z = -312,
+         elevation = 71,
+         radius = 500
+     },
 
 }
 
