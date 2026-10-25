@@ -1,8 +1,13 @@
 -- =========================================================
--- SMALL PLANE COCKPIT - CC:SABLE V3
+-- SMALL PLANE COCKPIT - CC:SABLE V4
 -- =========================================================
 
 local dfpwm = require("cc.audio.dfpwm")
+local aeroApi = aero or aerodynamics
+
+if not aeroApi then
+    error("CC:Sable aero API not found")
+end
 
 
 -- =========================================================
@@ -19,24 +24,24 @@ local AIRPORTS = {
     },
 
     HOME = {
-         x = -657,
-         z = -312,
-         elevation = 71,
-         radius = 500
-     },
+        x = -657,
+        z = -312,
+        elevation = 71,
+        radius = 500
+    },
 
     THEMEPARK = {
-         x = 661,
-         z = -756,
-         elevation = 65,
-         radius = 700
-     },
+        x = 661,
+        z = -756,
+        elevation = 65,
+        radius = 700
+    },
 
 }
 
 
 -- =========================================================
--- ORIENTATION
+-- ORIENTATION / DISPLAY
 -- =========================================================
 
 local BANK_EULER_AXIS = 1
@@ -52,7 +57,7 @@ local PITCH_DEGREES_PER_ROW = 10
 
 
 -- =========================================================
--- BANK ANGLE
+-- BANK WARNING
 -- =========================================================
 
 local BANK_WARNING_ANGLE = 40
@@ -63,55 +68,60 @@ local BANK_WARNING_REPEAT = 3
 -- STALL
 -- =========================================================
 --
--- Stall is now mainly based on:
+-- IMPORTANT:
 --
---      HIGH PITCH
---      +
---      VERTICAL SPEED COLLAPSING
+-- Stall is NO LONGER simply:
 --
--- rather than requiring extremely low speed.
+--      slow speed = STALL
 --
--- This should catch:
+-- A steep actual climb first "arms" the stall detector.
 --
---     rocket climb
---     nose 60-90 degrees up
---     climb rate starts dying
---     -> STALL
+-- After that, if:
 --
--- while being much less dependent on slow approaches.
+--      climb rate collapses
+--      OR
+--      vertical speed becomes very low
+--
+-- while pressure-adjusted speed has fallen enough,
+-- STALL is triggered.
+--
+-- This should catch your:
+--
+--      rocket climb
+--      -> speed bleeds
+--      -> climb stops
+--      -> aircraft falls
+--
+-- without screaming during ordinary slow level flight.
 -- =========================================================
 
--- Don't stall-warn when essentially stationary.
 local STALL_MIN_SPEED = 2
 
+-- Actual direction of travel must reach this climb angle
+-- to arm the detector.
+local STALL_CLIMB_ARM_ANGLE = 30
 
--- VERY steep nose-up:
---
--- At 45+ degrees pitch, if climb rate has dropped
--- below 10 blocks/sec, start warning.
-local STALL_HIGH_PITCH = 45
-local STALL_HIGH_PITCH_MAX_VS = 10
+-- Once armed, remain armed for this many seconds.
+-- This allows STALL to keep detecting through the apex
+-- even when the flight path starts dropping again.
+local STALL_ARM_HOLD = 3.0
 
+-- Pressure-adjusted speed threshold.
+local STALL_EFFECTIVE_SPEED = 32
 
--- Moderate but still aggressive pitch:
---
--- At 30+ degrees, vertical speed must deteriorate
--- much further before warning.
-local STALL_MED_PITCH = 30
-local STALL_MED_PITCH_MAX_VS = 3
+-- Negative vertical acceleration means climb performance
+-- is collapsing.
+local STALL_VERTICAL_ACCEL = -0.8
 
-
--- AoA can also cause stall warning, but only if:
---
---   nose is raised
---   vertical performance is poor
---
-local STALL_AOA = 20
-local STALL_AOA_MIN_PITCH = 15
-local STALL_AOA_MAX_VS = 2
-
+-- If an armed aircraft reaches this low VS while its
+-- effective speed is also low, trigger STALL.
+local STALL_LOW_VS = 4
 
 local STALL_WARNING_REPEAT = 1.2
+
+
+-- Pressure at Y=63 is treated as our normal reference.
+local PRESSURE_REFERENCE_ALTITUDE = 63
 
 
 -- =========================================================
@@ -134,39 +144,29 @@ local SINK_RATE_REPEAT = 2.5
 -- =========================================================
 -- PULL UP
 -- =========================================================
+--
+-- PULL UP is now terrain based.
+--
+-- It is COMPLETELY DISABLED inside registered airport
+-- radii, exactly like TERRAIN.
+--
+-- Outside airports:
+--
+-- Optical hit = TERRAIN
+-- Optical hit <= 7 blocks = PULL UP
+-- =========================================================
 
-local PULL_UP_TIME_TO_GROUND = 2.2
-
-local PULL_UP_MIN_DESCENT = -4
-
+local PULL_UP_TERRAIN_DISTANCE = 7
 local PULL_UP_REPEAT = 1.5
 
 
 -- =========================================================
 -- TERRAIN
 -- =========================================================
---
--- TERRAIN is:
---
--- DISABLED inside airport radius.
---
--- ENABLED outside airport radius if optical sensor hits.
---
--- BUT:
---
--- aircraft must actually be moving.
---
--- This prevents:
---
--- TERRAIN
--- TERRAIN
--- TERRAIN
---
--- forever after crashing and stopping.
--- =========================================================
 
 local TERRAIN_REPEAT = 1.2
 
+-- Prevent crashed/stationary aircraft endlessly screaming.
 local TERRAIN_MIN_SPEED = 0.5
 local TERRAIN_MIN_VERTICAL_SPEED = 0.2
 
@@ -177,18 +177,16 @@ local TERRAIN_MIN_VERTICAL_SPEED = 0.2
 
 local RETARD_AGL = 5
 
--- 0 = lowest running thrust
---
--- Therefore RETARD only sounds at 1-13.
---
--- 14 and 15 = OFF
+-- 0 = lowest running thrust.
+-- 1-13 = increasing power.
+-- 14 / 15 = OFF.
 local RETARD_THRUST_THRESHOLD = 0
 
 local RETARD_REPEAT = 1.2
 
 
 -- =========================================================
--- SOUNDS
+-- SOUND FILES
 -- =========================================================
 
 local SOUND_BANK =
@@ -255,18 +253,22 @@ local optical =
     peripheral.find("optical_sensor")
 
 
--- Fallback detection for optical sensor.
+-- Fallback optical detection.
 if not optical then
 
-    for _, name in ipairs(peripheral.getNames()) do
+    for _, name in ipairs(
+        peripheral.getNames()
+    ) do
 
         local p =
             peripheral.wrap(name)
 
         if
             p
-            and type(p.hasHit) == "function"
-            and type(p.getDistance) == "function"
+            and
+            type(p.hasHit) == "function"
+            and
+            type(p.getDistance) == "function"
         then
 
             optical = p
@@ -315,18 +317,25 @@ local function round(n)
 
     if n >= 0 then
         return math.floor(n + 0.5)
-    else
-        return math.ceil(n - 0.5)
     end
+
+    return math.ceil(n - 0.5)
 
 end
 
 
-local function clamp(n, low, high)
+local function clamp(
+    n,
+    low,
+    high
+)
 
     return math.max(
         low,
-        math.min(high, n)
+        math.min(
+            high,
+            n
+        )
     )
 
 end
@@ -337,7 +346,6 @@ local function normalizeDegrees(angle)
     angle =
         angle % 360
 
-
     if angle > 180 then
 
         angle =
@@ -345,40 +353,67 @@ local function normalizeDegrees(angle)
 
     end
 
-
     return angle
 
 end
 
 
-local function atan2(y, x)
+local function atan2(
+    y,
+    x
+)
 
     if math.atan2 then
 
-        return math.atan2(y, x)
+        return math.atan2(
+            y,
+            x
+        )
 
     end
 
 
     if x > 0 then
 
-        return math.atan(y / x)
+        return math.atan(
+            y / x
+        )
 
-    elseif x < 0 and y >= 0 then
+    elseif
+        x < 0
+        and
+        y >= 0
+    then
 
-        return math.atan(y / x)
-            + math.pi
+        return math.atan(
+            y / x
+        )
+        + math.pi
 
-    elseif x < 0 and y < 0 then
+    elseif
+        x < 0
+        and
+        y < 0
+    then
 
-        return math.atan(y / x)
-            - math.pi
+        return math.atan(
+            y / x
+        )
+        - math.pi
 
-    elseif x == 0 and y > 0 then
+    elseif
+        x == 0
+        and
+        y > 0
+    then
 
         return math.pi / 2
 
-    elseif x == 0 and y < 0 then
+    elseif
+        x == 0
+        and
+        y < 0
+    then
 
         return -math.pi / 2
 
@@ -390,7 +425,10 @@ local function atan2(y, x)
 end
 
 
-local function clearRow(y, bg)
+local function clearRow(
+    y,
+    bg
+)
 
     monitor.setBackgroundColor(bg)
 
@@ -422,18 +460,15 @@ local function writeAt(
         y
     )
 
-
     monitor.setTextColor(
         fg
         or colors.white
     )
 
-
     monitor.setBackgroundColor(
         bg
         or colors.black
     )
-
 
     monitor.write(text)
 
@@ -449,7 +484,12 @@ local function writeCenter(
 
     local x =
         math.floor(
-            (width - #text) / 2
+            (
+                width
+                -
+                #text
+            )
+            / 2
         )
         + 1
 
@@ -526,7 +566,11 @@ local function drawPairRow(
         1
 
 
-    if rightX <= #leftText then
+    if
+        rightX
+        <=
+        #leftText
+    then
 
         rightX =
             #leftText
@@ -556,9 +600,11 @@ end
 
 local soundQueue = {}
 
-local currentlyPlaying = nil
+local currentlyPlaying =
+    nil
 
-local queueOrder = 0
+local queueOrder =
+    0
 
 
 local function soundAlreadyQueued(path)
@@ -568,7 +614,11 @@ local function soundAlreadyQueued(path)
     end
 
 
-    for _, sound in ipairs(soundQueue) do
+    for _, sound
+        in ipairs(
+            soundQueue
+        )
+    do
 
         if sound.path == path then
             return true
@@ -598,7 +648,8 @@ local function queueSound(
 
 
     queueOrder =
-        queueOrder + 1
+        queueOrder
+        + 1
 
 
     table.insert(
@@ -614,9 +665,16 @@ local function queueSound(
     table.sort(
         soundQueue,
 
-        function(a, b)
+        function(
+            a,
+            b
+        )
 
-            if a.priority == b.priority then
+            if
+                a.priority
+                ==
+                b.priority
+            then
 
                 return
                     a.order
@@ -632,6 +690,7 @@ local function queueSound(
                 b.priority
 
         end
+
     )
 
 end
@@ -709,7 +768,11 @@ local function audioLoop()
 
     while true do
 
-        if #soundQueue > 0 then
+        if
+            #soundQueue
+            >
+            0
+        then
 
             local sound =
                 table.remove(
@@ -738,21 +801,28 @@ end
 -- =========================================================
 
 local sides = {
+
     "top",
     "bottom",
     "left",
     "right",
     "front",
     "back"
+
 }
 
 
 local function getRawThrust()
 
-    local strongest = 0
+    local strongest =
+        0
 
 
-    for _, side in ipairs(sides) do
+    for _, side
+        in ipairs(
+            sides
+        )
+    do
 
         if
             not peripheral.isPresent(
@@ -766,7 +836,11 @@ local function getRawThrust()
                 )
 
 
-            if value > strongest then
+            if
+                value
+                >
+                strongest
+            then
 
                 strongest =
                     value
@@ -785,38 +859,22 @@ end
 
 local function decodeThrust(raw)
 
-    -- YOUR ENGINE CONTROL:
-    --
-    -- 0  lowest running power
-    -- 13 maximum power
-    -- 14 OFF
-    -- 15 OFF
-
-    local off =
-        raw >= 14
-
-
-    local power
-
-
-    if off then
-
-        power = 0
-
-    else
-
-        power = raw
-
-    end
-
+    -- 0  = minimum running power
+    -- 13 = maximum
+    -- 14 = OFF
+    -- 15 = OFF
 
     return {
 
         raw = raw,
 
-        power = power,
+        power =
+            raw >= 14
+            and 0
+            or raw,
 
-        off = off
+        off =
+            raw >= 14
 
     }
 
@@ -831,22 +889,26 @@ local function getClosestAirport(
     position
 )
 
-    local closestName = nil
-    local closest = nil
+    local closestName =
+        nil
+
+    local closest =
+        nil
 
     local closestDistance =
         math.huge
 
 
     for name, airport
-        in pairs(AIRPORTS)
+        in pairs(
+            AIRPORTS
+        )
     do
 
         local dx =
             position.x
             -
             airport.x
-
 
         local dz =
             position.z
@@ -894,9 +956,11 @@ end
 -- WARNING DISPLAY
 -- =========================================================
 
-local warningText = nil
+local warningText =
+    nil
 
-local warningUntil = 0
+local warningUntil =
+    0
 
 local warningColor =
     colors.red
@@ -911,12 +975,10 @@ local function showWarning(
     warningText =
         text
 
-
     warningUntil =
         os.clock()
         +
         duration
-
 
     warningColor =
         color
@@ -926,7 +988,7 @@ end
 
 
 -- =========================================================
--- HORIZON
+-- ARTIFICIAL HORIZON
 -- =========================================================
 
 local ladderAngles = {
@@ -947,17 +1009,28 @@ local function drawHorizon(
     pitch
 )
 
-    local top = 3
+    local top =
+        3
 
     local bottom =
         height - 2
 
 
     local centerX =
-        (width + 1) / 2
+        (
+            width
+            +
+            1
+        )
+        / 2
 
     local centerY =
-        (top + bottom) / 2
+        (
+            top
+            +
+            bottom
+        )
+        / 2
 
 
     local visualBank =
@@ -983,16 +1056,20 @@ local function drawHorizon(
         PITCH_DEGREES_PER_ROW
 
 
-    for y = top, bottom do
+    for y =
+        top,
+        bottom
+    do
 
         local chars = {}
-
         local fg = {}
-
         local bg = {}
 
 
-        for x = 1, width do
+        for x =
+            1,
+            width
+        do
 
             local horizonY =
                 centerY
@@ -1001,10 +1078,18 @@ local function drawHorizon(
                 +
                 slope
                 *
-                (x - centerX)
+                (
+                    x
+                    -
+                    centerX
+                )
 
 
-            if y < horizonY then
+            if
+                y
+                <
+                horizonY
+            then
 
                 bg[x] =
                     colors.toBlit(
@@ -1023,7 +1108,6 @@ local function drawHorizon(
 
             chars[x] =
                 " "
-
 
             fg[x] =
                 colors.toBlit(
@@ -1048,26 +1132,31 @@ local function drawHorizon(
                     )
 
 
-                local halfWidth = 2
+                local halfWidth =
+                    2
 
 
                 if
                     math.abs(
                         ladderAngle
                     )
-                    == 20
+                    ==
+                    20
                 then
 
-                    halfWidth = 3
+                    halfWidth =
+                        3
 
                 elseif
                     math.abs(
                         ladderAngle
                     )
-                    == 30
+                    ==
+                    30
                 then
 
-                    halfWidth = 4
+                    halfWidth =
+                        4
 
                 end
 
@@ -1078,7 +1167,8 @@ local function drawHorizon(
                         -
                         centerX
                     )
-                    <= halfWidth
+                    <=
+                    halfWidth
 
                     and
 
@@ -1087,7 +1177,8 @@ local function drawHorizon(
                         -
                         ladderY
                     )
-                    < 0.30
+                    <
+                    0.30
                 then
 
                     chars[x] =
@@ -1107,7 +1198,8 @@ local function drawHorizon(
                     -
                     horizonY
                 )
-                < 0.40
+                <
+                0.40
             then
 
                 chars[x] =
@@ -1125,19 +1217,18 @@ local function drawHorizon(
 
 
         monitor.blit(
-            table.concat(chars),
-            table.concat(fg),
-            table.concat(bg)
+            table.concat(
+                chars
+            ),
+            table.concat(
+                fg
+            ),
+            table.concat(
+                bg
+            )
         )
 
     end
-
-
-    -- Aircraft symbol
-    local aircraftY =
-        round(
-            centerY
-        )
 
 
     local marker =
@@ -1146,9 +1237,21 @@ local function drawHorizon(
 
     local markerX =
         math.floor(
-            (width - #marker) / 2
+            (
+                width
+                -
+                #marker
+            )
+            / 2
         )
-        + 1
+        +
+        1
+
+
+    local aircraftY =
+        round(
+            centerY
+        )
 
 
     writeAt(
@@ -1198,24 +1301,34 @@ local function drawBankScale(bank)
 
 
     for _, tick
-        in ipairs(ticks)
+        in ipairs(
+            ticks
+        )
     do
-
-        local angle =
-            tick[1]
-
 
         local x =
             round(
                 1
                 +
                 (
-                    (angle + scaleLimit)
+                    (
+                        tick[1]
+                        +
+                        scaleLimit
+                    )
                     /
-                    (scaleLimit * 2)
+                    (
+                        scaleLimit
+                        *
+                        2
+                    )
                 )
                 *
-                (width - 1)
+                (
+                    width
+                    -
+                    1
+                )
             )
 
 
@@ -1251,12 +1364,24 @@ local function drawBankScale(bank)
             1
             +
             (
-                (pointerBank + scaleLimit)
+                (
+                    pointerBank
+                    +
+                    scaleLimit
+                )
                 /
-                (scaleLimit * 2)
+                (
+                    scaleLimit
+                    *
+                    2
+                )
             )
             *
-            (width - 1)
+            (
+                width
+                -
+                1
+            )
         )
 
 
@@ -1280,6 +1405,104 @@ end
 
 
 -- =========================================================
+-- PRESSURE
+-- =========================================================
+
+local function getPressureRatio(
+    position
+)
+
+    local currentPressure =
+        1
+
+    local referencePressure =
+        1
+
+
+    local okCurrent,
+          resultCurrent =
+        pcall(
+            aeroApi.getAirPressure,
+            position
+        )
+
+
+    if
+        okCurrent
+        and
+        type(
+            resultCurrent
+        )
+        ==
+        "number"
+        and
+        resultCurrent
+        >
+        0
+    then
+
+        currentPressure =
+            resultCurrent
+
+    end
+
+
+    local referencePosition =
+        vector.new(
+
+            position.x,
+
+            PRESSURE_REFERENCE_ALTITUDE,
+
+            position.z
+
+        )
+
+
+    local okReference,
+          resultReference =
+        pcall(
+            aeroApi.getAirPressure,
+            referencePosition
+        )
+
+
+    if
+        okReference
+        and
+        type(
+            resultReference
+        )
+        ==
+        "number"
+        and
+        resultReference
+        >
+        0
+    then
+
+        referencePressure =
+            resultReference
+
+    end
+
+
+    return clamp(
+
+        currentPressure
+        /
+        referencePressure,
+
+        0.05,
+
+        2
+
+    )
+
+end
+
+
+-- =========================================================
 -- FLIGHT DATA
 -- =========================================================
 
@@ -1294,65 +1517,99 @@ local function getFlightData()
 
 
     local euler = {
+
         pose.orientation:toEuler()
+
     }
 
 
     local rawBank =
         math.deg(
+
             euler[
                 BANK_EULER_AXIS
             ]
+
         )
 
 
     local rawPitch =
         math.deg(
+
             euler[
                 PITCH_EULER_AXIS
             ]
+
         )
 
 
     local bank =
         normalizeDegrees(
+
             (
                 rawBank
                 -
                 BANK_ZERO_DEG
             )
+
             *
+
             BANK_SIGN
+
         )
 
 
     local pitch =
         normalizeDegrees(
+
             (
                 rawPitch
                 -
                 PITCH_ZERO_DEG
             )
+
             *
+
             PITCH_SIGN
+
         )
 
 
     local speed =
         math.sqrt(
-            velocity.x * velocity.x
+
+            velocity.x
+            *
+            velocity.x
+
             +
-            velocity.y * velocity.y
+
+            velocity.y
+            *
+            velocity.y
+
             +
-            velocity.z * velocity.z
+
+            velocity.z
+            *
+            velocity.z
+
         )
 
 
     local horizontalSpeed =
         math.sqrt(
-            velocity.x * velocity.x
+
+            velocity.x
+            *
+            velocity.x
+
             +
-            velocity.z * velocity.z
+
+            velocity.z
+            *
+            velocity.z
+
         )
 
 
@@ -1360,26 +1617,60 @@ local function getFlightData()
         velocity.y
 
 
+    -- Actual direction of movement.
+    --
+    -- 0   = level
+    -- 45  = steep climb
+    -- 90  = straight upward
+    -- -45 = steep descent
     local flightPathAngle =
         math.deg(
+
             atan2(
+
                 verticalSpeed,
+
                 horizontalSpeed
+
             )
+
         )
 
 
+    -- Kept for display / future use.
+    -- It does NOT independently trigger stall anymore.
     local aoa =
         normalizeDegrees(
+
             pitch
             -
             flightPathAngle
+
         )
+
+
+    local pressureRatio =
+        getPressureRatio(
+            pose.position
+        )
+
+
+    -- This isn't real indicated airspeed.
+    --
+    -- It is deliberately a Minecraft/Sable
+    -- pressure-adjusted speed used by the stall detector.
+    --
+    -- Lower pressure at altitude lowers this value.
+    local effectiveSpeed =
+        speed
+        *
+        pressureRatio
 
 
     return {
 
-        pose = pose,
+        pose =
+            pose,
 
         altitude =
             pose.position.y,
@@ -1393,8 +1684,17 @@ local function getFlightData()
         speed =
             speed,
 
+        effectiveSpeed =
+            effectiveSpeed,
+
+        pressureRatio =
+            pressureRatio,
+
         verticalSpeed =
             verticalSpeed,
+
+        flightPathAngle =
+            flightPathAngle,
 
         aoa =
             aoa
@@ -1408,36 +1708,59 @@ end
 -- WARNING STATE
 -- =========================================================
 
-local lastBank = -100
+local lastBank =
+    -100
 
-local lastStall = -100
+local lastStall =
+    -100
 
-local lastOverspeed = -100
+local lastOverspeed =
+    -100
 
-local lastSinkRate = -100
+local lastSinkRate =
+    -100
 
-local lastPullUp = -100
+local lastPullUp =
+    -100
 
-local lastTerrain = -100
+local lastTerrain =
+    -100
 
-local lastRetard = -100
-
-
-local previousAGL = nil
-
-local previousAirport = nil
+local lastRetard =
+    -100
 
 
--- Used to verify descent
-local previousAltitude = nil
+local previousAGL =
+    nil
 
-local previousAltitudeTime = nil
+local previousAirport =
+    nil
 
-local altitudeTrendVS = 0
+
+local previousAltitude =
+    nil
+
+local previousAltitudeTime =
+    nil
+
+local altitudeTrendVS =
+    0
+
+
+local previousVerticalSpeed =
+    nil
+
+local verticalAcceleration =
+    0
+
+
+-- Timestamp of most recent steep climb.
+local lastSteepClimb =
+    -100
 
 
 -- =========================================================
--- WARNINGS
+-- WARNING LOGIC
 -- =========================================================
 
 local function updateWarnings(
@@ -1450,7 +1773,7 @@ local function updateWarnings(
 
 
     -- =====================================================
-    -- VERIFY TRUE CLIMB / DESCENT
+    -- MOTION TREND
     -- =====================================================
 
     if
@@ -1476,6 +1799,33 @@ local function updateWarnings(
                 /
                 dt
 
+
+            if previousVerticalSpeed then
+
+                local rawVerticalAcceleration =
+                    (
+                        data.verticalSpeed
+                        -
+                        previousVerticalSpeed
+                    )
+                    /
+                    dt
+
+
+                -- Smooth physics noise.
+                verticalAcceleration =
+                    verticalAcceleration
+                    *
+                    0.75
+
+                    +
+
+                    rawVerticalAcceleration
+                    *
+                    0.25
+
+            end
+
         end
 
     end
@@ -1484,9 +1834,11 @@ local function updateWarnings(
     previousAltitude =
         data.altitude
 
-
     previousAltitudeTime =
         now
+
+    previousVerticalSpeed =
+        data.verticalSpeed
 
 
     local descending =
@@ -1502,7 +1854,7 @@ local function updateWarnings(
 
 
     -- =====================================================
-    -- AIRPORT
+    -- AIRPORT / AGL
     -- =====================================================
 
     local airportName,
@@ -1515,13 +1867,16 @@ local function updateWarnings(
 
     local insideAirport =
         airport
+
         and
+
         airportDistance
         <=
         airport.radius
 
 
-    local agl = nil
+    local agl =
+        nil
 
 
     if insideAirport then
@@ -1535,7 +1890,7 @@ local function updateWarnings(
 
 
     -- =====================================================
-    -- TERRAIN
+    -- AIRCRAFT MOVING?
     -- =====================================================
 
     local aircraftMoving =
@@ -1552,44 +1907,36 @@ local function updateWarnings(
         TERRAIN_MIN_VERTICAL_SPEED
 
 
+    -- =====================================================
+    -- TERRAIN
+    -- =====================================================
+
     local terrainDetected =
         false
 
+    local terrainDistance =
+        nil
 
-    -- TERRAIN IS EXPLICITLY DISABLED
-    -- INSIDE AIRPORT RADIUS.
+
+    -- TERRAIN IS DISABLED AT AIRPORTS.
     if
         not insideAirport
+
         and
+
         aircraftMoving
     then
 
         terrainDetected =
             optical.hasHit()
 
-    end
 
+        if terrainDetected then
 
-    -- =====================================================
-    -- TIME TO GROUND
-    -- =====================================================
+            terrainDistance =
+                optical.getDistance()
 
-    local timeToGround =
-        math.huge
-
-
-    if
-        agl
-        and
-        agl > 0
-        and
-        descending
-    then
-
-        timeToGround =
-            agl
-            /
-            (-data.verticalSpeed)
+        end
 
     end
 
@@ -1597,84 +1944,109 @@ local function updateWarnings(
     -- =====================================================
     -- PULL UP
     -- =====================================================
+    --
+    -- PULL UP IS ALSO DISABLED AT AIRPORTS.
+    --
+    -- Away from airports:
+    --
+    -- TERRAIN = sensor sees anything
+    -- PULL UP = sensor sees something <= 7 blocks
+    -- =====================================================
 
     local pullUp =
-        agl
-        and
-        agl > 0
+        not insideAirport
 
         and
-        descending
+
+        terrainDetected
 
         and
-        data.verticalSpeed < 0
+
+        terrainDistance ~= nil
 
         and
-        data.verticalSpeed
+
+        terrainDistance
         <=
-        PULL_UP_MIN_DESCENT
-
-        and
-        timeToGround
-        <=
-        PULL_UP_TIME_TO_GROUND
+        PULL_UP_TERRAIN_DISTANCE
 
 
     -- =====================================================
     -- STALL
     -- =====================================================
     --
-    -- THREE POSSIBLE CONDITIONS:
+    -- The old independent AoA stall path is removed.
     --
-    -- 1. Very high pitch and climb rate dying.
+    -- That was responsible for slow straight flight
+    -- sometimes triggering STALL.
     --
-    -- 2. Moderate high pitch and almost no climb.
+    -- Instead:
     --
-    -- 3. High AoA + nose raised + poor vertical speed.
-    --
-    -- NO requirement to fall all the way to SPD 10.
+    -- 1. ACTUAL upward trajectory becomes steep.
+    -- 2. Stall system becomes armed.
+    -- 3. It remains armed briefly through the apex.
+    -- 4. If climb performance collapses while pressure-
+    --    adjusted speed is low, STALL sounds.
     -- =====================================================
 
-    local stallHighPitch =
-        data.pitch
+
+    if
+        data.flightPathAngle
         >=
-        STALL_HIGH_PITCH
+        STALL_CLIMB_ARM_ANGLE
 
         and
 
         data.verticalSpeed
+        >
+        0
+    then
+
+        lastSteepClimb =
+            now
+
+    end
+
+
+    local stallArmed =
+        (
+            now
+            -
+            lastSteepClimb
+        )
         <=
-        STALL_HIGH_PITCH_MAX_VS
+        STALL_ARM_HOLD
 
 
-    local stallMediumPitch =
-        data.pitch
-        >=
-        STALL_MED_PITCH
+    -- Case 1:
+    --
+    -- Still climbing but VS is collapsing rapidly.
+    local collapsingClimb =
+        verticalAcceleration
+        <=
+        STALL_VERTICAL_ACCEL
 
         and
 
+        data.effectiveSpeed
+        <=
+        STALL_EFFECTIVE_SPEED
+
+
+    -- Case 2:
+    --
+    -- At/near the top of the climb,
+    -- almost no climb left.
+    local nearlyOutOfClimb =
         data.verticalSpeed
         <=
-        STALL_MED_PITCH_MAX_VS
-
-
-    local stallAoA =
-        data.aoa
-        >=
-        STALL_AOA
+        STALL_LOW_VS
 
         and
 
-        data.pitch
-        >=
-        STALL_AOA_MIN_PITCH
-
-        and
-
-        data.verticalSpeed
+        data.effectiveSpeed
         <=
-        STALL_AOA_MAX_VS
+        STALL_EFFECTIVE_SPEED
 
 
     local stall =
@@ -1684,12 +2056,14 @@ local function updateWarnings(
 
         and
 
+        stallArmed
+
+        and
+
         (
-            stallHighPitch
+            collapsingClimb
             or
-            stallMediumPitch
-            or
-            stallAoA
+            nearlyOutOfClimb
         )
 
 
@@ -1709,24 +2083,26 @@ local function updateWarnings(
 
     local sinkRate =
         agl
+
         and
+
         agl > 0
 
         and
+
         descending
 
         and
-        data.verticalSpeed < 0
 
-        and
-        agl
-        <=
-        SINK_RATE_MAX_AGL
-
-        and
         data.verticalSpeed
         <=
         SINK_RATE_THRESHOLD
+
+        and
+
+        agl
+        <=
+        SINK_RATE_MAX_AGL
 
 
     -- =====================================================
@@ -1747,23 +2123,29 @@ local function updateWarnings(
 
     local retard =
         agl
+
         and
+
         agl > 0
 
         and
+
         agl
         <=
         RETARD_AGL
 
         and
+
         descending
 
-        -- 14 and 15 = OFF
+        -- 14 / 15 count as engine OFF.
         and
+
         not thrust.off
 
-        -- 0 = lowest power and counts as retarded
+        -- 0 counts as fully retarded.
         and
+
         thrust.power
         >
         RETARD_THRUST_THRESHOLD
@@ -1972,7 +2354,7 @@ local function updateWarnings(
 
 
     -- =====================================================
-    -- ALTITUDE CALLOUTS
+    -- AIRPORT ALTITUDE CALLOUTS
     -- =====================================================
 
     if insideAirport then
@@ -2069,11 +2451,17 @@ local function updateWarnings(
         terrainDetected =
             terrainDetected,
 
-        aircraftMoving =
-            aircraftMoving,
+        terrainDistance =
+            terrainDistance,
 
         descending =
-            descending
+            descending,
+
+        verticalAcceleration =
+            verticalAcceleration,
+
+        stallArmed =
+            stallArmed
 
     }
 
@@ -2090,13 +2478,9 @@ local function drawDisplay()
         getFlightData()
 
 
-    local rawThrust =
-        getRawThrust()
-
-
     local thrust =
         decodeThrust(
-            rawThrust
+            getRawThrust()
         )
 
 
@@ -2107,14 +2491,14 @@ local function drawDisplay()
         )
 
 
-    -- Horizon
+    -- Artificial horizon
     drawHorizon(
         data.bank,
         data.pitch
     )
 
 
-    -- Bank ticks
+    -- Bank indicator
     drawBankScale(
         data.bank
     )
@@ -2145,22 +2529,26 @@ local function drawDisplay()
         1,
 
         "SPD "
-        .. speedNumber,
+        ..
+        speedNumber,
 
         "ALT "
-        .. altitudeNumber,
+        ..
+        altitudeNumber,
 
         "S"
-        .. speedNumber,
+        ..
+        speedNumber,
 
         "A"
-        .. altitudeNumber
+        ..
+        altitudeNumber
 
     )
 
 
     -- =====================================================
-    -- AGL + VS
+    -- AGL + VERTICAL SPEED
     -- =====================================================
 
     local aglText
@@ -2213,18 +2601,20 @@ local function drawDisplay()
         aglText,
 
         "VS "
-        .. vsNumber,
+        ..
+        vsNumber,
 
         compactAGL,
 
         "V"
-        .. vsNumber
+        ..
+        vsNumber
 
     )
 
 
     -- =====================================================
-    -- BANK / PITCH / THRUST
+    -- BANK / PITCH / RAW THRUST
     -- =====================================================
 
     clearRow(
@@ -2235,30 +2625,24 @@ local function drawDisplay()
 
     -- IMPORTANT:
     --
-    -- We display RAW THRUST again.
-    --
-    -- Therefore you can tell:
+    -- RAW THRUST IS ALWAYS DISPLAYED.
     --
     -- T13
     -- T14
     -- T15
     --
-    -- even though 14/15 are internally treated as OFF
-    -- for RETARD logic.
-    local thrustText =
-        "T"
-        ..
-        tostring(
-            thrust.raw
-        )
-
-
+    -- 14 and 15 are still internally understood as OFF.
     local bottomText =
         string.format(
-            "B%+.0f P%+.0f %s",
+
+            "B%+.0f P%+.0f T%d",
+
             data.bank,
+
             data.pitch,
-            thrustText
+
+            thrust.raw
+
         )
 
 
@@ -2271,7 +2655,7 @@ local function drawDisplay()
 
 
     -- =====================================================
-    -- WARNING
+    -- WARNING TEXT
     -- =====================================================
 
     if
@@ -2306,7 +2690,7 @@ end
 
 
 -- =========================================================
--- LOOPS
+-- MAIN LOOPS
 -- =========================================================
 
 local function displayLoop()
