@@ -25,6 +25,13 @@ local AIRPORTS = {
          radius = 500
      },
 
+    THEMEPARK = {
+         x = 661,
+         z = -756,
+         elevation = 65,
+         radius = 700
+     },
+
 }
 
 
