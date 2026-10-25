@@ -1,5 +1,5 @@
 -- =========================================================
--- SMALL PLANE COCKPIT - CC:SABLE V4
+-- SMALL PLANE COCKPIT - CC:SABLE V5
 -- =========================================================
 
 local dfpwm = require("cc.audio.dfpwm")
@@ -41,19 +41,49 @@ local AIRPORTS = {
 
 
 -- =========================================================
--- ORIENTATION / DISPLAY
+-- ORIENTATION
+-- =========================================================
+--
+-- CONFIRMED FROM YOUR TEST:
+--
+-- Roll left changed old PITCH
+-- -> Euler axis 3 = BANK
+--
+-- Pitch up changed old BANK negatively
+-- -> Euler axis 1 = PITCH
+-- -> invert sign
 -- =========================================================
 
-local BANK_EULER_AXIS = 1
-local PITCH_EULER_AXIS = 3
+local BANK_EULER_AXIS = 3
+local PITCH_EULER_AXIS = 1
 
 local BANK_SIGN = 1
-local PITCH_SIGN = 1
+local PITCH_SIGN = -1
 
 local BANK_ZERO_DEG = 0
 local PITCH_ZERO_DEG = 0
 
 local PITCH_DEGREES_PER_ROW = 10
+
+
+-- =========================================================
+-- AIRPORT GROUND INHIBIT
+-- =========================================================
+--
+-- When inside airport radius AND within +/-10 blocks
+-- of runway elevation:
+--
+-- STALL       OFF
+-- OVERSPEED   OFF
+-- BANK ANGLE  OFF
+-- SINK RATE   OFF
+-- TERRAIN     OFF
+-- PULL UP     OFF
+--
+-- Landing altitude callouts and RETARD still work.
+-- =========================================================
+
+local AIRPORT_GROUND_INHIBIT_HEIGHT = 10
 
 
 -- =========================================================
@@ -68,59 +98,28 @@ local BANK_WARNING_REPEAT = 3
 -- STALL
 -- =========================================================
 --
--- IMPORTANT:
+-- A steep climb ARMS the stall detector.
 --
--- Stall is NO LONGER simply:
+-- Then if climb performance collapses while
+-- pressure-adjusted speed is low:
 --
---      slow speed = STALL
---
--- A steep actual climb first "arms" the stall detector.
---
--- After that, if:
---
---      climb rate collapses
---      OR
---      vertical speed becomes very low
---
--- while pressure-adjusted speed has fallen enough,
--- STALL is triggered.
---
--- This should catch your:
---
---      rocket climb
---      -> speed bleeds
---      -> climb stops
---      -> aircraft falls
---
--- without screaming during ordinary slow level flight.
+-- STALL
 -- =========================================================
 
 local STALL_MIN_SPEED = 2
 
--- Actual direction of travel must reach this climb angle
--- to arm the detector.
 local STALL_CLIMB_ARM_ANGLE = 30
 
--- Once armed, remain armed for this many seconds.
--- This allows STALL to keep detecting through the apex
--- even when the flight path starts dropping again.
 local STALL_ARM_HOLD = 3.0
 
--- Pressure-adjusted speed threshold.
 local STALL_EFFECTIVE_SPEED = 32
 
--- Negative vertical acceleration means climb performance
--- is collapsing.
 local STALL_VERTICAL_ACCEL = -0.8
 
--- If an armed aircraft reaches this low VS while its
--- effective speed is also low, trigger STALL.
 local STALL_LOW_VS = 4
 
 local STALL_WARNING_REPEAT = 1.2
 
-
--- Pressure at Y=63 is treated as our normal reference.
 local PRESSURE_REFERENCE_ALTITUDE = 63
 
 
@@ -145,15 +144,10 @@ local SINK_RATE_REPEAT = 2.5
 -- PULL UP
 -- =========================================================
 --
--- PULL UP is now terrain based.
---
--- It is COMPLETELY DISABLED inside registered airport
--- radii, exactly like TERRAIN.
---
 -- Outside airports:
 --
--- Optical hit = TERRAIN
--- Optical hit <= 7 blocks = PULL UP
+-- optical hit       -> TERRAIN
+-- distance <= 7     -> PULL UP
 -- =========================================================
 
 local PULL_UP_TERRAIN_DISTANCE = 7
@@ -166,7 +160,7 @@ local PULL_UP_REPEAT = 1.5
 
 local TERRAIN_REPEAT = 1.2
 
--- Prevent crashed/stationary aircraft endlessly screaming.
+-- Prevent crashed/stationary plane screaming forever.
 local TERRAIN_MIN_SPEED = 0.5
 local TERRAIN_MIN_VERTICAL_SPEED = 0.2
 
@@ -177,16 +171,16 @@ local TERRAIN_MIN_VERTICAL_SPEED = 0.2
 
 local RETARD_AGL = 5
 
--- 0 = lowest running thrust.
--- 1-13 = increasing power.
--- 14 / 15 = OFF.
+-- 0 = minimum running power
+-- 1-13 = increasing power
+-- 14 / 15 = OFF
 local RETARD_THRUST_THRESHOLD = 0
 
 local RETARD_REPEAT = 1.2
 
 
 -- =========================================================
--- SOUND FILES
+-- SOUNDS
 -- =========================================================
 
 local SOUND_BANK =
@@ -253,7 +247,7 @@ local optical =
     peripheral.find("optical_sensor")
 
 
--- Fallback optical detection.
+-- Fallback optical detection
 if not optical then
 
     for _, name in ipairs(
@@ -317,9 +311,9 @@ local function round(n)
 
     if n >= 0 then
         return math.floor(n + 0.5)
+    else
+        return math.ceil(n - 0.5)
     end
-
-    return math.ceil(n - 0.5)
 
 end
 
@@ -347,10 +341,8 @@ local function normalizeDegrees(angle)
         angle % 360
 
     if angle > 180 then
-
         angle =
             angle - 360
-
     end
 
     return angle
@@ -364,56 +356,27 @@ local function atan2(
 )
 
     if math.atan2 then
-
-        return math.atan2(
-            y,
-            x
-        )
-
+        return math.atan2(y, x)
     end
 
 
     if x > 0 then
 
-        return math.atan(
-            y / x
-        )
+        return math.atan(y / x)
 
-    elseif
-        x < 0
-        and
-        y >= 0
-    then
+    elseif x < 0 and y >= 0 then
 
-        return math.atan(
-            y / x
-        )
-        + math.pi
+        return math.atan(y / x) + math.pi
 
-    elseif
-        x < 0
-        and
-        y < 0
-    then
+    elseif x < 0 and y < 0 then
 
-        return math.atan(
-            y / x
-        )
-        - math.pi
+        return math.atan(y / x) - math.pi
 
-    elseif
-        x == 0
-        and
-        y > 0
-    then
+    elseif x == 0 and y > 0 then
 
         return math.pi / 2
 
-    elseif
-        x == 0
-        and
-        y < 0
-    then
+    elseif x == 0 and y < 0 then
 
         return -math.pi / 2
 
@@ -461,13 +424,11 @@ local function writeAt(
     )
 
     monitor.setTextColor(
-        fg
-        or colors.white
+        fg or colors.white
     )
 
     monitor.setBackgroundColor(
-        bg
-        or colors.black
+        bg or colors.black
     )
 
     monitor.write(text)
@@ -484,14 +445,8 @@ local function writeCenter(
 
     local x =
         math.floor(
-            (
-                width
-                -
-                #text
-            )
-            / 2
-        )
-        + 1
+            (width - #text) / 2
+        ) + 1
 
 
     if x < 1 then
@@ -539,12 +494,10 @@ local function drawPairRow(
     then
 
         leftText =
-            compactLeft
-            or leftText
+            compactLeft or leftText
 
         rightText =
-            compactRight
-            or rightText
+            compactRight or rightText
 
     end
 
@@ -566,16 +519,9 @@ local function drawPairRow(
         1
 
 
-    if
-        rightX
-        <=
-        #leftText
-    then
-
+    if rightX <= #leftText then
         rightX =
-            #leftText
-            + 1
-
+            #leftText + 1
     end
 
 
@@ -599,12 +545,8 @@ end
 -- =========================================================
 
 local soundQueue = {}
-
-local currentlyPlaying =
-    nil
-
-local queueOrder =
-    0
+local currentlyPlaying = nil
+local queueOrder = 0
 
 
 local function soundAlreadyQueued(path)
@@ -614,11 +556,9 @@ local function soundAlreadyQueued(path)
     end
 
 
-    for _, sound
-        in ipairs(
-            soundQueue
-        )
-    do
+    for _, sound in ipairs(
+        soundQueue
+    ) do
 
         if sound.path == path then
             return true
@@ -648,8 +588,7 @@ local function queueSound(
 
 
     queueOrder =
-        queueOrder
-        + 1
+        queueOrder + 1
 
 
     table.insert(
@@ -665,32 +604,15 @@ local function queueSound(
     table.sort(
         soundQueue,
 
-        function(
-            a,
-            b
-        )
+        function(a, b)
 
-            if
-                a.priority
-                ==
-                b.priority
-            then
-
-                return
-                    a.order
-                    <
-                    b.order
-
+            if a.priority == b.priority then
+                return a.order < b.order
             end
 
-
-            return
-                a.priority
-                >
-                b.priority
+            return a.priority > b.priority
 
         end
-
     )
 
 end
@@ -740,11 +662,9 @@ local function playSound(path)
             decoder(chunk)
 
 
-        while
-            not speaker.playAudio(
-                buffer
-            )
-        do
+        while not speaker.playAudio(
+            buffer
+        ) do
 
             os.pullEvent(
                 "speaker_audio_empty"
@@ -757,7 +677,6 @@ local function playSound(path)
 
     file.close()
 
-
     currentlyPlaying =
         nil
 
@@ -768,11 +687,7 @@ local function audioLoop()
 
     while true do
 
-        if
-            #soundQueue
-            >
-            0
-        then
+        if #soundQueue > 0 then
 
             local sound =
                 table.remove(
@@ -818,17 +733,13 @@ local function getRawThrust()
         0
 
 
-    for _, side
-        in ipairs(
-            sides
-        )
-    do
+    for _, side in ipairs(
+        sides
+    ) do
 
-        if
-            not peripheral.isPresent(
-                side
-            )
-        then
+        if not peripheral.isPresent(
+            side
+        ) then
 
             local value =
                 redstone.getAnalogInput(
@@ -836,15 +747,8 @@ local function getRawThrust()
                 )
 
 
-            if
-                value
-                >
-                strongest
-            then
-
-                strongest =
-                    value
-
+            if value > strongest then
+                strongest = value
             end
 
         end
@@ -858,11 +762,6 @@ end
 
 
 local function decodeThrust(raw)
-
-    -- 0  = minimum running power
-    -- 13 = maximum
-    -- 14 = OFF
-    -- 15 = OFF
 
     return {
 
@@ -899,16 +798,15 @@ local function getClosestAirport(
         math.huge
 
 
-    for name, airport
-        in pairs(
-            AIRPORTS
-        )
-    do
+    for name, airport in pairs(
+        AIRPORTS
+    ) do
 
         local dx =
             position.x
             -
             airport.x
+
 
         local dz =
             position.z
@@ -924,11 +822,7 @@ local function getClosestAirport(
             )
 
 
-        if
-            distance
-            <
-            closestDistance
-        then
+        if distance < closestDistance then
 
             closestName =
                 name
@@ -956,14 +850,9 @@ end
 -- WARNING DISPLAY
 -- =========================================================
 
-local warningText =
-    nil
-
-local warningUntil =
-    0
-
-local warningColor =
-    colors.red
+local warningText = nil
+local warningUntil = 0
+local warningColor = colors.red
 
 
 local function showWarning(
@@ -981,8 +870,7 @@ local function showWarning(
         duration
 
     warningColor =
-        color
-        or colors.red
+        color or colors.red
 
 end
 
@@ -1017,20 +905,10 @@ local function drawHorizon(
 
 
     local centerX =
-        (
-            width
-            +
-            1
-        )
-        / 2
+        (width + 1) / 2
 
     local centerY =
-        (
-            top
-            +
-            bottom
-        )
-        / 2
+        (top + bottom) / 2
 
 
     local visualBank =
@@ -1056,20 +934,14 @@ local function drawHorizon(
         PITCH_DEGREES_PER_ROW
 
 
-    for y =
-        top,
-        bottom
-    do
+    for y = top, bottom do
 
         local chars = {}
         local fg = {}
         local bg = {}
 
 
-        for x =
-            1,
-            width
-        do
+        for x = 1, width do
 
             local horizonY =
                 centerY
@@ -1078,18 +950,10 @@ local function drawHorizon(
                 +
                 slope
                 *
-                (
-                    x
-                    -
-                    centerX
-                )
+                (x - centerX)
 
 
-            if
-                y
-                <
-                horizonY
-            then
+            if y < horizonY then
 
                 bg[x] =
                     colors.toBlit(
@@ -1115,12 +979,9 @@ local function drawHorizon(
                 )
 
 
-            -- Pitch ladder
-            for _, ladderAngle
-                in ipairs(
-                    ladderAngles
-                )
-            do
+            for _, ladderAngle in ipairs(
+                ladderAngles
+            ) do
 
                 local ladderY =
                     horizonY
@@ -1136,24 +997,16 @@ local function drawHorizon(
                     2
 
 
-                if
-                    math.abs(
-                        ladderAngle
-                    )
-                    ==
-                    20
-                then
+                if math.abs(
+                    ladderAngle
+                ) == 20 then
 
                     halfWidth =
                         3
 
-                elseif
-                    math.abs(
-                        ladderAngle
-                    )
-                    ==
-                    30
-                then
+                elseif math.abs(
+                    ladderAngle
+                ) == 30 then
 
                     halfWidth =
                         4
@@ -1163,22 +1016,16 @@ local function drawHorizon(
 
                 if
                     math.abs(
-                        x
-                        -
-                        centerX
+                        x - centerX
                     )
-                    <=
-                    halfWidth
+                    <= halfWidth
 
                     and
 
                     math.abs(
-                        y
-                        -
-                        ladderY
+                        y - ladderY
                     )
-                    <
-                    0.30
+                    < 0.30
                 then
 
                     chars[x] =
@@ -1191,15 +1038,11 @@ local function drawHorizon(
             end
 
 
-            -- Main horizon
             if
                 math.abs(
-                    y
-                    -
-                    horizonY
+                    y - horizonY
                 )
-                <
-                0.40
+                < 0.40
             then
 
                 chars[x] =
@@ -1217,15 +1060,9 @@ local function drawHorizon(
 
 
         monitor.blit(
-            table.concat(
-                chars
-            ),
-            table.concat(
-                fg
-            ),
-            table.concat(
-                bg
-            )
+            table.concat(chars),
+            table.concat(fg),
+            table.concat(bg)
         )
 
     end
@@ -1237,15 +1074,8 @@ local function drawHorizon(
 
     local markerX =
         math.floor(
-            (
-                width
-                -
-                #marker
-            )
-            / 2
-        )
-        +
-        1
+            (width - #marker) / 2
+        ) + 1
 
 
     local aircraftY =
@@ -1300,11 +1130,9 @@ local function drawBankScale(bank)
     }
 
 
-    for _, tick
-        in ipairs(
-            ticks
-        )
-    do
+    for _, tick in ipairs(
+        ticks
+    ) do
 
         local x =
             round(
@@ -1325,9 +1153,7 @@ local function drawBankScale(bank)
                 )
                 *
                 (
-                    width
-                    -
-                    1
+                    width - 1
                 )
             )
 
@@ -1378,9 +1204,7 @@ local function drawBankScale(bank)
             )
             *
             (
-                width
-                -
-                1
+                width - 1
             )
         )
 
@@ -1430,15 +1254,9 @@ local function getPressureRatio(
     if
         okCurrent
         and
-        type(
-            resultCurrent
-        )
-        ==
-        "number"
+        type(resultCurrent) == "number"
         and
-        resultCurrent
-        >
-        0
+        resultCurrent > 0
     then
 
         currentPressure =
@@ -1470,15 +1288,9 @@ local function getPressureRatio(
     if
         okReference
         and
-        type(
-            resultReference
-        )
-        ==
-        "number"
+        type(resultReference) == "number"
         and
-        resultReference
-        >
-        0
+        resultReference > 0
     then
 
         referencePressure =
@@ -1578,21 +1390,15 @@ local function getFlightData()
     local speed =
         math.sqrt(
 
-            velocity.x
-            *
-            velocity.x
+            velocity.x * velocity.x
 
             +
 
-            velocity.y
-            *
-            velocity.y
+            velocity.y * velocity.y
 
             +
 
-            velocity.z
-            *
-            velocity.z
+            velocity.z * velocity.z
 
         )
 
@@ -1600,15 +1406,11 @@ local function getFlightData()
     local horizontalSpeed =
         math.sqrt(
 
-            velocity.x
-            *
-            velocity.x
+            velocity.x * velocity.x
 
             +
 
-            velocity.z
-            *
-            velocity.z
+            velocity.z * velocity.z
 
         )
 
@@ -1617,12 +1419,6 @@ local function getFlightData()
         velocity.y
 
 
-    -- Actual direction of movement.
-    --
-    -- 0   = level
-    -- 45  = steep climb
-    -- 90  = straight upward
-    -- -45 = steep descent
     local flightPathAngle =
         math.deg(
 
@@ -1637,8 +1433,6 @@ local function getFlightData()
         )
 
 
-    -- Kept for display / future use.
-    -- It does NOT independently trigger stall anymore.
     local aoa =
         normalizeDegrees(
 
@@ -1655,12 +1449,6 @@ local function getFlightData()
         )
 
 
-    -- This isn't real indicated airspeed.
-    --
-    -- It is deliberately a Minecraft/Sable
-    -- pressure-adjusted speed used by the stall detector.
-    --
-    -- Lower pressure at altitude lowers this value.
     local effectiveSpeed =
         speed
         *
@@ -1754,7 +1542,6 @@ local verticalAcceleration =
     0
 
 
--- Timestamp of most recent steep climb.
 local lastSteepClimb =
     -100
 
@@ -1812,7 +1599,6 @@ local function updateWarnings(
                     dt
 
 
-                -- Smooth physics noise.
                 verticalAcceleration =
                     verticalAcceleration
                     *
@@ -1890,7 +1676,25 @@ local function updateWarnings(
 
 
     -- =====================================================
-    -- AIRCRAFT MOVING?
+    -- GROUND INHIBIT
+    -- =====================================================
+
+    local airportGroundInhibit =
+        insideAirport
+
+        and
+
+        agl ~= nil
+
+        and
+
+        math.abs(agl)
+        <=
+        AIRPORT_GROUND_INHIBIT_HEIGHT
+
+
+    -- =====================================================
+    -- MOVEMENT
     -- =====================================================
 
     local aircraftMoving =
@@ -1918,7 +1722,7 @@ local function updateWarnings(
         nil
 
 
-    -- TERRAIN IS DISABLED AT AIRPORTS.
+    -- Terrain is disabled anywhere inside airport radius.
     if
         not insideAirport
 
@@ -1944,14 +1748,6 @@ local function updateWarnings(
     -- =====================================================
     -- PULL UP
     -- =====================================================
-    --
-    -- PULL UP IS ALSO DISABLED AT AIRPORTS.
-    --
-    -- Away from airports:
-    --
-    -- TERRAIN = sensor sees anything
-    -- PULL UP = sensor sees something <= 7 blocks
-    -- =====================================================
 
     local pullUp =
         not insideAirport
@@ -1972,25 +1768,20 @@ local function updateWarnings(
 
 
     -- =====================================================
-    -- STALL
+    -- STALL ARMING
     -- =====================================================
     --
-    -- The old independent AoA stall path is removed.
+    -- IMPORTANT:
     --
-    -- That was responsible for slow straight flight
-    -- sometimes triggering STALL.
-    --
-    -- Instead:
-    --
-    -- 1. ACTUAL upward trajectory becomes steep.
-    -- 2. Stall system becomes armed.
-    -- 3. It remains armed briefly through the apex.
-    -- 4. If climb performance collapses while pressure-
-    --    adjusted speed is low, STALL sounds.
+    -- Do NOT even arm STALL while sitting/taking off
+    -- within 10 blocks of runway elevation.
     -- =====================================================
-
 
     if
+        not airportGroundInhibit
+
+        and
+
         data.flightPathAngle
         >=
         STALL_CLIMB_ARM_ANGLE
@@ -2009,6 +1800,10 @@ local function updateWarnings(
 
 
     local stallArmed =
+        not airportGroundInhibit
+
+        and
+
         (
             now
             -
@@ -2018,9 +1813,6 @@ local function updateWarnings(
         STALL_ARM_HOLD
 
 
-    -- Case 1:
-    --
-    -- Still climbing but VS is collapsing rapidly.
     local collapsingClimb =
         verticalAcceleration
         <=
@@ -2033,10 +1825,6 @@ local function updateWarnings(
         STALL_EFFECTIVE_SPEED
 
 
-    -- Case 2:
-    --
-    -- At/near the top of the climb,
-    -- almost no climb left.
     local nearlyOutOfClimb =
         data.verticalSpeed
         <=
@@ -2120,6 +1908,10 @@ local function updateWarnings(
     -- =====================================================
     -- RETARD
     -- =====================================================
+    --
+    -- This remains active even during airport ground
+    -- warning inhibit because it is a landing callout.
+    -- =====================================================
 
     local retard =
         agl
@@ -2138,12 +1930,10 @@ local function updateWarnings(
 
         descending
 
-        -- 14 / 15 count as engine OFF.
         and
 
         not thrust.off
 
-        -- 0 counts as fully retarded.
         and
 
         thrust.power
@@ -2152,178 +1942,198 @@ local function updateWarnings(
 
 
     -- =====================================================
-    -- WARNING PRIORITY
+    -- NORMAL WARNING PRIORITY
+    -- =====================================================
+    --
+    -- ALL normal warnings inhibited near runway elevation.
     -- =====================================================
 
-    if pullUp then
+    if not airportGroundInhibit then
 
-        showWarning(
-            "PULL UP",
-            0.5,
-            colors.red
-        )
+        if pullUp then
 
-
-        if
-            now
-            -
-            lastPullUp
-            >=
-            PULL_UP_REPEAT
-        then
-
-            queueSound(
-                SOUND_PULL_UP,
-                100
+            showWarning(
+                "PULL UP",
+                0.5,
+                colors.red
             )
 
-            lastPullUp =
+
+            if
                 now
+                -
+                lastPullUp
+                >=
+                PULL_UP_REPEAT
+            then
+
+                queueSound(
+                    SOUND_PULL_UP,
+                    100
+                )
+
+                lastPullUp =
+                    now
+
+            end
+
+
+        elseif terrainDetected then
+
+            showWarning(
+                "TERRAIN",
+                0.5,
+                colors.red
+            )
+
+
+            if
+                now
+                -
+                lastTerrain
+                >=
+                TERRAIN_REPEAT
+            then
+
+                queueSound(
+                    SOUND_TERRAIN,
+                    95
+                )
+
+                lastTerrain =
+                    now
+
+            end
+
+
+        elseif stall then
+
+            showWarning(
+                "STALL",
+                0.5,
+                colors.red
+            )
+
+
+            if
+                now
+                -
+                lastStall
+                >=
+                STALL_WARNING_REPEAT
+            then
+
+                queueSound(
+                    SOUND_STALL,
+                    90
+                )
+
+                lastStall =
+                    now
+
+            end
+
+
+        elseif overspeed then
+
+            showWarning(
+                "OVERSPEED",
+                0.5,
+                colors.red
+            )
+
+
+            if
+                now
+                -
+                lastOverspeed
+                >=
+                OVERSPEED_REPEAT
+            then
+
+                queueSound(
+                    SOUND_OVERSPEED,
+                    85
+                )
+
+                lastOverspeed =
+                    now
+
+            end
+
+
+        elseif sinkRate then
+
+            showWarning(
+                "SINK RATE",
+                0.5,
+                colors.orange
+            )
+
+
+            if
+                now
+                -
+                lastSinkRate
+                >=
+                SINK_RATE_REPEAT
+            then
+
+                queueSound(
+                    SOUND_SINK_RATE,
+                    80
+                )
+
+                lastSinkRate =
+                    now
+
+            end
+
+
+        elseif bankAngle then
+
+            showWarning(
+                "BANK ANGLE",
+                0.5,
+                colors.orange
+            )
+
+
+            if
+                now
+                -
+                lastBank
+                >=
+                BANK_WARNING_REPEAT
+            then
+
+                queueSound(
+                    SOUND_BANK,
+                    60
+                )
+
+                lastBank =
+                    now
+
+            end
 
         end
 
+    else
 
-    elseif terrainDetected then
+        -- Remove any existing normal warning text
+        -- while we're on/near the runway.
+        warningText =
+            nil
 
-        showWarning(
-            "TERRAIN",
-            0.5,
-            colors.red
-        )
-
-
-        if
-            now
-            -
-            lastTerrain
-            >=
-            TERRAIN_REPEAT
-        then
-
-            queueSound(
-                SOUND_TERRAIN,
-                95
-            )
-
-            lastTerrain =
-                now
-
-        end
+    end
 
 
-    elseif stall then
+    -- =====================================================
+    -- RETARD
+    -- =====================================================
 
-        showWarning(
-            "STALL",
-            0.5,
-            colors.red
-        )
-
-
-        if
-            now
-            -
-            lastStall
-            >=
-            STALL_WARNING_REPEAT
-        then
-
-            queueSound(
-                SOUND_STALL,
-                90
-            )
-
-            lastStall =
-                now
-
-        end
-
-
-    elseif overspeed then
-
-        showWarning(
-            "OVERSPEED",
-            0.5,
-            colors.red
-        )
-
-
-        if
-            now
-            -
-            lastOverspeed
-            >=
-            OVERSPEED_REPEAT
-        then
-
-            queueSound(
-                SOUND_OVERSPEED,
-                85
-            )
-
-            lastOverspeed =
-                now
-
-        end
-
-
-    elseif sinkRate then
-
-        showWarning(
-            "SINK RATE",
-            0.5,
-            colors.orange
-        )
-
-
-        if
-            now
-            -
-            lastSinkRate
-            >=
-            SINK_RATE_REPEAT
-        then
-
-            queueSound(
-                SOUND_SINK_RATE,
-                80
-            )
-
-            lastSinkRate =
-                now
-
-        end
-
-
-    elseif bankAngle then
-
-        showWarning(
-            "BANK ANGLE",
-            0.5,
-            colors.orange
-        )
-
-
-        if
-            now
-            -
-            lastBank
-            >=
-            BANK_WARNING_REPEAT
-        then
-
-            queueSound(
-                SOUND_BANK,
-                60
-            )
-
-            lastBank =
-                now
-
-        end
-
-
-    elseif retard then
+    if retard then
 
         showWarning(
             "RETARD",
@@ -2354,7 +2164,7 @@ local function updateWarnings(
 
 
     -- =====================================================
-    -- AIRPORT ALTITUDE CALLOUTS
+    -- ALTITUDE CALLOUTS
     -- =====================================================
 
     if insideAirport then
@@ -2380,11 +2190,9 @@ local function updateWarnings(
             descending
         then
 
-            for _, callout
-                in ipairs(
-                    ALTITUDE_CALLOUTS
-                )
-            do
+            for _, callout in ipairs(
+                ALTITUDE_CALLOUTS
+            ) do
 
                 if
                     previousAGL
@@ -2445,6 +2253,9 @@ local function updateWarnings(
         airportDistance =
             airportDistance,
 
+        airportGroundInhibit =
+            airportGroundInhibit,
+
         agl =
             agl,
 
@@ -2456,9 +2267,6 @@ local function updateWarnings(
 
         descending =
             descending,
-
-        verticalAcceleration =
-            verticalAcceleration,
 
         stallArmed =
             stallArmed
@@ -2498,7 +2306,7 @@ local function drawDisplay()
     )
 
 
-    -- Bank indicator
+    -- Bank scale
     drawBankScale(
         data.bank
     )
@@ -2623,15 +2431,6 @@ local function drawDisplay()
     )
 
 
-    -- IMPORTANT:
-    --
-    -- RAW THRUST IS ALWAYS DISPLAYED.
-    --
-    -- T13
-    -- T14
-    -- T15
-    --
-    -- 14 and 15 are still internally understood as OFF.
     local bottomText =
         string.format(
 
