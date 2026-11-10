@@ -1,6 +1,6 @@
 -- A local DFPWM file or a public GitHub RAW URL:
-local SOURCE = "song.dfpwm"
--- local SOURCE = "https://github.com/DeleDeki/themepark-cc/raw/refs/heads/main/music/themeParkMusic/Coaster.dfpwm"
+-- local SOURCE = "song.dfpwm"
+local SOURCE = "https://github.com/DeleDeki/themepark-cc/raw/refs/heads/main/music/themeParkMusic/Coaster.dfpwm"
 local VOLUME = 1 -- 0 to 3
 
 local dfpwm = require("cc.audio.dfpwm")
