@@ -1,0 +1,35 @@
+-- A local DFPWM file or a public GitHub RAW URL:
+local SOURCE = "song.dfpwm"
+-- local SOURCE = "https://raw.githubusercontent.com/USERNAME/REPO/main/song.dfpwm"
+local VOLUME = 1 -- 0 to 3
+
+local dfpwm = require("cc.audio.dfpwm")
+local speaker = peripheral.find("speaker")
+assert(speaker, "Connect a speaker to this computer first.")
+
+local handle, reason
+if SOURCE:match("^https?://") then
+    assert(http, "HTTP must be enabled to stream music.")
+    handle, reason = http.get(SOURCE, nil, true)
+else
+    handle, reason = fs.open(SOURCE, "rb")
+end
+assert(handle, reason or ("Cannot open " .. SOURCE))
+
+local ok, err = pcall(function()
+    local decode = dfpwm.make_decoder()
+    while true do
+        local chunk = handle.read(16 * 1024)
+        if not chunk or #chunk == 0 then break end
+        local samples = decode(chunk)
+        while not speaker.playAudio(samples, VOLUME) do
+            os.pullEvent("speaker_audio_empty")
+        end
+    end
+end)
+
+handle.close()
+if not ok then
+    speaker.stop()
+    error(err, 0)
+end
