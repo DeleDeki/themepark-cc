@@ -1,5 +1,5 @@
 -- A local DFPWM file or a public GitHub RAW URL:
-local SOURCE = "https://github.com/DeleDeki/themepark-cc/raw/refs/heads/main/music/themeParkMusic/CoasterLongCut.dfpwm"
+local SOURCE = "https://github.com/DeleDeki/themepark-cc/raw/refs/heads/main/music/themeParkMusic/CoasterShortCut.dfpwm"
 -- For local playback, replace the line above with: local SOURCE = "song.dfpwm"
 local VOLUME = 3 -- 0 to 3
 
