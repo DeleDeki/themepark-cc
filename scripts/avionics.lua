@@ -36,6 +36,12 @@ local AIRPORTS = {
         elevation = 65,
         radius = 700
     },
+    TEST = {
+        x = 561,
+        z = 140,
+        elevation = 15,
+        radius = 700
+    },
 
 }
 
